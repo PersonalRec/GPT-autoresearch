@@ -373,6 +373,9 @@ if __name__ == "__main__":
     parser.add_argument("--download-workers", type=int, default=8, help="Number of parallel download workers")
     args = parser.parse_args()
 
+    if args.num_shards != -1 and args.num_shards < 1:
+        parser.error("--num-shards must be -1 or a positive integer")
+
     num_shards = MAX_SHARD if args.num_shards == -1 else args.num_shards
 
     print(f"Cache directory: {CACHE_DIR}")
