@@ -87,6 +87,19 @@ c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
 d4e5f6g	0.000000	0.0	crash	double model width (OOM)
 ```
 
+## The Research State Caching (`research_state.md`)
+
+To avoid blindly repeating mistakes and to synthesize knowledge, you MUST maintain a living memory document called `research_state.md`. 
+Because you need to read this file constantly, it must be rigorously compressed. You must adhere strictly to a replacement policy.
+
+**The Strict Structural Constraints of `research_state.md`**:
+1. **Current Blueprint:** Exactly ONE paragraph describing the current winning `train.py` architecture.
+2. **The 10 Successful Principles (Max):** A bulleted list of up to 10 proven principles for this 5-minute sandbox (e.g., *Matrix LR > 0.08 causes Muon to diverge*).
+3. **The 10 Failed Hypotheses (Max):** A bulleted list of up to 10 falsified hypotheses (e.g., *Adding SwiGLU requires 15% more compute, failing the 5-min budget*).
+
+**The Replacement Policy:**
+If you discover an 11th successful principle or an 11th failed hypothesis, you MUST forcibly overwrite the least scientifically valuable bullet point to make room for it. You must continuously rank your own discoveries. Only the most universal, highest-leverage insights survive.
+
 ## The experiment loop
 
 The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
@@ -94,13 +107,15 @@ The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autorese
 LOOP FOREVER (until I wake up and come back in the morning):
 
 1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. record the results in the tsv
-7. if val_bpb improved (lower), you "advance" the branch, keeping the git commit
-8. if val_bpb is equal or worse, you git reset back to where you started
+2. **READ `research_state.md` to inform your next hypothesis.**
+3. Tune `train.py` with an experimental idea by directly hacking the code.
+4. git commit
+5. run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
+6. read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
+7. record the results in the tsv
+8. **UPDATE `research_state.md` with your new empirical findings (applying the Eviction Policy if necessary).**
+9. if val_bpb improved (lower), you "advance" the branch, keeping the git commit
+10. if val_bpb is equal or worse, you git reset back to where you started
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 
