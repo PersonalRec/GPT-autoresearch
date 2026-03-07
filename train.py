@@ -100,14 +100,18 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
-        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
+        # SwiGLU hidden dim, preserving parameter count (8/3 multiplier of original 4x)
+        hidden_dim = int(8 * config.n_embd / 3)
+        # Ensure multiple of 64 for optimal Tensor Core utilization on Hopper
+        hidden_dim = (hidden_dim + 63) // 64 * 64
+        
+        self.c_fc1 = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.c_fc2 = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.c_proj = nn.Linear(hidden_dim, config.n_embd, bias=False)
+        self.c_proj.weight.data.zero_()
 
     def forward(self, x):
-        x = self.c_fc(x)
-        x = F.relu(x).square()
-        x = self.c_proj(x)
-        return x
+        return self.c_proj(F.silu(self.c_fc1(x)) * self.c_fc2(x))
 
 
 class Block(nn.Module):
