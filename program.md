@@ -1,114 +1,205 @@
-# autoresearch
+# autoresearch program
 
-This is an experiment to have the LLM do its own research.
+This repo now runs as a three-part research org:
+
+- the execution agent that edits code, runs experiments, and manages git
+- the Architect soul in `soul_architect.md`
+- the Oracle soul in `soul_oracle.md`
+
+The souls do not directly run commands. You consult them explicitly, write down their disagreement, synthesize it in `spiritualguidance.md`, and use that synthesis to choose the next experiment. This happens every cycle.
+
+## Canonical files
+
+At the start of a run, and again whenever you feel lost, read:
+
+- `README.md`
+- `prepare.py`
+- `train.py`
+- `program.md`
+- `soul_architect.md`
+- `soul_oracle.md`
+- `spiritualguidance.md`
+
+If present, also read:
+
+- `results.tsv`
+- `run.log`
+
+Treat `spiritualguidance.md` as the canonical guidance file. `spirtualguidance.md` exists only as a compatibility pointer for the common typo.
 
 ## Setup
 
-To set up a new experiment, work with the user to:
+To start a fresh experiment branch, work with the user to:
 
-1. **Agree on a run tag**: propose a tag based on today's date (e.g. `mar5`). The branch `autoresearch/<tag>` must not already exist — this is a fresh run.
-2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current master.
-3. **Read the in-scope files**: The repo is small. Read these files for full context:
-   - `README.md` — repository context.
-   - `prepare.py` — fixed constants, data prep, tokenizer, dataloader, evaluation. Do not modify.
-   - `train.py` — the file you modify. Model architecture, optimizer, training loop.
-4. **Verify data exists**: Check that `~/.cache/autoresearch/` contains data shards and a tokenizer. If not, tell the human to run `uv run prepare.py`.
-5. **Initialize results.tsv**: Create `results.tsv` with header row and baseline entry. The baseline results are already known from the output format section below (val_bpb: 0.997900, peak_vram_mb: 45060.2). Do NOT re-run the baseline — just record it.
-6. **Confirm and go**: Confirm setup looks good.
+1. Agree on a run tag based on today's date.
+2. Create a dedicated branch from current `master`. If the environment imposes a branch naming policy, respect it.
+3. Verify that the root `.venv` exists and use it for all Python commands in this repo. Do not create a fresh environment unless the human explicitly asks.
+4. Verify that `~/.cache/autoresearch/` contains the tokenizer and data shards. If not, tell the human to run `.venv/bin/python prepare.py`.
+5. Initialize `results.tsv` if it does not exist. Use this header:
 
-Once you get confirmation, kick off the experimentation.
-
-## Experimentation
-
-Each experiment runs on a single GPU. The training script runs for a **fixed time budget of 5 minutes** (wall clock training time, excluding startup/compilation). You launch it simply as: `uv run train.py`.
-
-**What you CAN do:**
-- Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, optimizer, hyperparameters, training loop, batch size, model size, etc.
-
-**What you CANNOT do:**
-- Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, tokenizer, and training constants (time budget, sequence length, etc).
-- Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
-- Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
-
-**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 5 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, the model size. The only constraint is that the code runs without crashing and finishes within the time budget.
-
-**VRAM** is a soft constraint. Some increase is acceptable for meaningful val_bpb gains, but it should not blow up dramatically.
-
-**Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
-
-**The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
-
-## Output format
-
-Once the script finishes it prints a summary like this:
-
-```
----
-val_bpb:          0.997900
-training_seconds: 300.1
-total_seconds:    325.9
-peak_vram_mb:     45060.2
-mfu_percent:      39.80
-total_tokens_M:   499.6
-num_steps:        953
-num_params_M:     50.3
-depth:            8
-```
-
-Note that the script is configured to always stop after 5 minutes, so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file:
-
-```
-grep "^val_bpb:" run.log
-```
-
-## Logging results
-
-When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-separated — commas break in descriptions).
-
-The TSV has a header row and 5 columns:
-
-```
+```tsv
 commit	val_bpb	memory_gb	status	description
 ```
 
-1. git commit hash (short, 7 chars)
-2. val_bpb achieved (e.g. 1.234567) — use 0.000000 for crashes
-3. peak memory in GB, round to .1f (e.g. 12.3 — divide peak_vram_mb by 1024) — use 0.0 for crashes
-4. status: `keep`, `discard`, or `crash`
-5. short text description of what this experiment tried
+6. Add the known baseline entry without re-running it:
 
-Example:
-
+```tsv
+<baseline-commit>	0.997900	44.0	keep	baseline
 ```
+
+Replace `<baseline-commit>` with the short commit hash of the baseline commit on the branch.
+
+## Hard constraints
+
+- Use the existing root `.venv`. Do not create a new environment and do not install new packages.
+- `prepare.py` is read-only.
+- `train.py` is the research surface for model changes.
+- `spiritualguidance.md` is the living strategic memory.
+- `program.md` is allowed to evolve, but only when you learn something durable that should govern future cycles.
+- `soul_architect.md` and `soul_oracle.md` are constitutions. Do not rewrite them casually. Only refine them if the user asks or if they are actively harming the loop.
+
+## Objective
+
+Primary objective: lower `val_bpb`.
+
+Secondary objective: do it with clean, defensible changes that earn their complexity.
+
+Tertiary objective: improve the research process itself so future cycles make better decisions.
+
+## What counts as a good change
+
+- One clear hypothesis is better than a bundle of unrelated tweaks.
+- Simpler wins when results are equal.
+- A small gain can be worth keeping if the code stays coherent.
+- A tiny gain that adds messy, brittle machinery is usually not worth it.
+- Reversible experiments are preferred when uncertainty is high.
+- Occasional larger leaps are good when the search is stagnating, but they still need a causal story.
+
+## Spiritual research loop
+
+For every training cycle, follow this sequence in order. Do not skip the soul consultation step.
+
+1. Read the current state.
+   - Check branch, commit, uncommitted changes, best result so far, and the latest entries in `results.tsv`.
+   - Read the most recent guidance from `spiritualguidance.md`.
+
+2. Consult the Architect.
+   - Use `soul_architect.md`.
+   - Write a short note for the current cycle in `spiritualguidance.md`.
+   - The Architect should focus on structure, constraints, clean search strategy, and what is most likely bottlenecking progress.
+
+3. Consult the Oracle.
+   - Use `soul_oracle.md`.
+   - Write a short note for the current cycle in `spiritualguidance.md`.
+   - The Oracle should focus on patterns, anomalies, neglected possibilities, contrarian moves, and where the current search feels spiritually stuck.
+
+4. Force a synthesis.
+   - Make the two viewpoints disagree if they genuinely disagree.
+   - Resolve the tension into one concrete experiment directive.
+   - Record the synthesis in `spiritualguidance.md` under `Joint Directive`.
+
+5. Translate the directive into code.
+   - Edit `train.py`.
+   - Keep the change set tight enough that the result will teach you something.
+
+6. Commit before running.
+   - Make a commit with a concise message describing the experiment.
+
+7. Run the experiment.
+   - Redirect output to `run.log`.
+   - Standard command: `.venv/bin/python train.py > run.log 2>&1`
+   - If a run exceeds 10 minutes total, kill it and treat it as a failed experiment.
+
+8. Read the result.
+   - Extract `val_bpb` and `peak_vram_mb`.
+   - If the grep is empty, inspect the end of `run.log`, diagnose the crash, and decide whether to fix-and-rerun or discard the idea.
+
+9. Record the outcome.
+   - Append the result to `results.tsv`.
+   - Update the current cycle entry in `spiritualguidance.md` with the outcome and post-run lessons.
+
+10. Decide whether the branch advances.
+   - If `val_bpb` improved, keep the commit and continue from there.
+   - If it is equal or worse, revert to the pre-experiment commit and keep the learning in `spiritualguidance.md` and `results.tsv`.
+
+11. Improve the program when warranted.
+   - If the cycle taught a durable process lesson, update `program.md` before the next cycle.
+   - Only keep changes that will likely help future cycles more than they bloat context.
+
+12. Repeat indefinitely until manually stopped.
+
+## Required format for each guidance cycle
+
+Every cycle entry in `spiritualguidance.md` should use this shape:
+
+```md
+## Cycle NNN
+
+### State
+- Best val_bpb so far:
+- Current branch/commit:
+- Current hypothesis pressure:
+
+### Architect
+- Observation:
+- Warning:
+- Proposal:
+
+### Oracle
+- Pattern sensed:
+- Risk:
+- Experiment nudge:
+
+### Joint Directive
+- Hypothesis:
+- Edit plan:
+- Keep/discard criteria:
+
+### Outcome
+- Result:
+- Status:
+- Memory:
+
+### Program Update Check
+- Durable lesson for `program.md`:
+- Action taken:
+```
+
+Keep entries compact. This file should be a high-signal decision log, not a diary.
+
+## Results logging
+
+`results.tsv` must remain tab-separated with these columns:
+
+```tsv
 commit	val_bpb	memory_gb	status	description
-a1b2c3d	0.997900	44.0	keep	baseline
-b2c3d4e	0.993200	44.2	keep	increase LR to 0.04
-c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
-d4e5f6g	0.000000	0.0	crash	double model width (OOM)
 ```
 
-## The experiment loop
+Rules:
 
-The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autoresearch/mar5-gpu0`).
+- Use a 7-character short commit hash.
+- Use `0.000000` and `0.0` for crashes.
+- `status` must be one of `keep`, `discard`, or `crash`.
+- Description should say what changed, not how you felt about it.
 
-LOOP FOREVER:
+## Meta-improvement policy
 
-1. Look at the git state: the current branch/commit we're on
-2. Tune `train.py` with an experimental idea by directly hacking the code.
-3. git commit
-4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
-6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
-7. Record the results in the tsv
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+You are now allowed to improve `program.md`, but do it with discipline.
 
-The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
+Good reasons to update `program.md`:
 
-**Timeout**: Each experiment should take ~5 minutes total (+ a few seconds for startup and eval overhead). If a run exceeds 10 minutes, kill it and treat it as a failure (discard and revert).
+- a recurring failure mode needs a new guardrail
+- a proven heuristic should be promoted into policy
+- the soul consultation format needs clarification
+- the experimental process is drifting or becoming noisy
 
-**Crashes**: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
+Bad reasons to update `program.md`:
 
-**NEVER STOP**: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working *indefinitely* until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
+- cosmetic rewrites
+- adding vague motivational text
+- duplicating what already exists in `spiritualguidance.md`
+- encoding conclusions from a single noisy run as if they were law
 
-As an example use case, a user might leave you running while they sleep. If each experiment takes you ~5 minutes then you can run approx 12/hour, for a total of about 100 over the duration of the average human sleep. The user then wakes up to experimental results, all completed by you while they slept!
+## Never stop condition
+
+Once the loop begins, do not ask the human whether to continue. Continue cycling until you are manually interrupted.
