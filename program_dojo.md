@@ -102,7 +102,7 @@ LOOP FOREVER:
 5. Read out the results: `grep "^robustness_gap:\|^worst_test:" run.log`
 6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the traceback and fix.
 7. Record the results in the tsv
-8. If robustness_gap improved (higher), `git add dojo_results.tsv && git commit --amend --no-edit`
+8. If robustness_gap improved (higher), `git add dojo_results.tsv && git commit --amend --no-edit`. Then `git push` so progress is saved remotely (protects against machine crashes overnight and lets you monitor from anywhere).
 9. If robustness_gap is equal or worse, record the discard commit hash, then `git reset --hard <previous kept commit>`
 
 **Think like a red team.** You are trying to find the model's weaknesses. Each iteration should be a hypothesis: "I bet this model is worse at X." Test it. If you're right, keep and build on it. If you're wrong, discard and try a different angle.
