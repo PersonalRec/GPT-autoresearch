@@ -461,50 +461,20 @@ device = torch.device("cuda")
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
 
 def get_peak_flops():
-    """
-    Return approximate peak tensor-core FLOPS for common NVIDIA GPUs.
-    Used for MFU reporting only.
-    """
     major, minor = torch.cuda.get_device_capability()
-    name = torch.cuda.get_device_name().lower()
 
-    # Hopper
     if (major, minor) == (9, 0):
         return 989.5e12  # H100 BF16/FP16 tensor core peak
-
-    # Ampere datacenter
     if (major, minor) == (8, 0):
         return 312e12  # A100 BF16/FP16 tensor core peak
 
-    # Ampere consumer / workstation
-    if (major, minor) == (8, 6):
-        return 165.2e12  # RTX 3090 / 4090-class style fallback for GA10x reporting
-
-    # Ada Lovelace
-    if (major, minor) == (8, 9):
-        if "4090" in name:
-            return 330.3e12
-        if "4080" in name:
-            return 194.9e12
-        if "l4" in name:
-            return 121e12
-        return 330.3e12
-
-    # Turing fallback
-    if (major, minor) == (7, 5):
-        return 130e12
-
-    # Volta fallback
-    if (major, minor) == (7, 0):
-        return 125e12
-
-    # Conservative fallback if unknown
     print(
-        f"Warning: unknown GPU capability {(major, minor)} ({torch.cuda.get_device_name()}); using H100 peak FLOPS fallback for MFU.")
+        f"Warning: MFU peak FLOPS is only calibrated for H100/A100; "
+        f"got {torch.cuda.get_device_name()} ({major}.{minor}), so MFU may be approximate."
+    )
     return 989.5e12
 
 PEAK_FLOPS = get_peak_flops()
-print(f"Using peak FLOPS for MFU: {PEAK_FLOPS:.3e}")
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
