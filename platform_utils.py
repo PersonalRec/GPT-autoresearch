@@ -292,7 +292,8 @@ def get_peak_memory_mb() -> float:
     if plat == "cuda":
         return torch.cuda.max_memory_allocated() / (1024 * 1024)
     if plat == "mps":
-        # torch.mps.current_allocated_memory() is available since PyTorch 2.1
+        # MPS does not expose peak memory tracking — this returns current
+        # allocation, not the high watermark. Best available approximation.
         if hasattr(torch.mps, "current_allocated_memory"):
             return torch.mps.current_allocated_memory() / (1024 * 1024)
         return 0.0

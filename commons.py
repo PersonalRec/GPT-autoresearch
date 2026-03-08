@@ -610,7 +610,7 @@ def _build_parser() -> argparse.ArgumentParser:
     wc.add_argument("--peak-memory", required=True, type=float, help="Peak VRAM in MB")
     wc.add_argument("--training-seconds", required=True, type=float, help="Training time in seconds")
     wc.add_argument("--num-steps", required=True, type=int, help="Number of training steps")
-    wc.add_argument("--status", required=True, choices=["keep", "revert", "inconclusive"], help="Experiment status")
+    wc.add_argument("--status", required=True, choices=["keep", "revert", "inconclusive", "crash"], help="Experiment status")
     wc.add_argument("--lesson", required=True, help="Lesson learned")
     wc.add_argument("--tags", required=True, help="Comma-separated tags")
     wc.add_argument("--config-diff", default="{}", help="JSON string of config diff")
