@@ -459,7 +459,52 @@ torch.cuda.manual_seed(42)
 torch.set_float32_matmul_precision("high")
 device = torch.device("cuda")
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-H100_BF16_PEAK_FLOPS = 989.5e12
+
+def get_peak_flops():
+    """
+    Return approximate peak tensor-core FLOPS for common NVIDIA GPUs.
+    Used for MFU reporting only.
+    """
+    major, minor = torch.cuda.get_device_capability()
+    name = torch.cuda.get_device_name().lower()
+
+    # Hopper
+    if (major, minor) == (9, 0):
+        return 989.5e12  # H100 BF16/FP16 tensor core peak
+
+    # Ampere datacenter
+    if (major, minor) == (8, 0):
+        return 312e12  # A100 BF16/FP16 tensor core peak
+
+    # Ampere consumer / workstation
+    if (major, minor) == (8, 6):
+        return 165.2e12  # RTX 3090 / 4090-class style fallback for GA10x reporting
+
+    # Ada Lovelace
+    if (major, minor) == (8, 9):
+        if "4090" in name:
+            return 330.3e12
+        if "4080" in name:
+            return 194.9e12
+        if "l4" in name:
+            return 121e12
+        return 330.3e12
+
+    # Turing fallback
+    if (major, minor) == (7, 5):
+        return 130e12
+
+    # Volta fallback
+    if (major, minor) == (7, 0):
+        return 125e12
+
+    # Conservative fallback if unknown
+    print(
+        f"Warning: unknown GPU capability {(major, minor)} ({torch.cuda.get_device_name()}); using H100 peak FLOPS fallback for MFU.")
+    return 989.5e12
+
+PEAK_FLOPS = get_peak_flops()
+print(f"Using peak FLOPS for MFU: {PEAK_FLOPS:.3e}")
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
@@ -583,7 +628,7 @@ while True:
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
     pct_done = 100 * progress
     tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / H100_BF16_PEAK_FLOPS
+    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / PEAK_FLOPS
     remaining = max(0, TIME_BUDGET - total_training_time)
 
     print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
@@ -614,7 +659,9 @@ with autocast_ctx:
 # Final summary
 t_end = time.time()
 startup_time = t_start_training - t_start
-steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / H100_BF16_PEAK_FLOPS if total_training_time > 0 else 0
+steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * \
+    (step - 10) / total_training_time / \
+    PEAK_FLOPS if total_training_time > 0 else 0
 peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
 
 print("---")
