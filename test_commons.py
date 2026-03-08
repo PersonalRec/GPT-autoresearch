@@ -846,3 +846,50 @@ class TestExperimentLineage:
         _make_card(knowledge_dir, commit_id="c1", prior_knowledge_used=[c1["id"]])
         brief = read_brief(knowledge_dir)
         assert "prior=1" in brief
+
+
+# ---------------------------------------------------------------------------
+# Structured metadata tests
+# ---------------------------------------------------------------------------
+
+
+class TestStructuredMetadata:
+    def test_card_stores_estimated_flops(self, knowledge_dir: Path):
+        card = _make_card(
+            knowledge_dir,
+            results={
+                "val_bpb": 0.99, "delta": -0.01,
+                "peak_vram_mb": 1000, "training_seconds": 300,
+                "num_steps": 100, "estimated_flops": 1.5e9,
+                "num_params": 50_300_000,
+            }
+        )
+        assert card["results"]["estimated_flops"] == 1.5e9
+        assert card["results"]["num_params"] == 50_300_000
+
+    def test_write_card_cli_accepts_flops(self, knowledge_dir: Path):
+        import subprocess
+        result = subprocess.run(
+            [
+                "python", "commons.py", "write-card",
+                "--commit", "meta1",
+                "--hypothesis", "Test metadata",
+                "--result", "0.99",
+                "--delta", "-0.01",
+                "--peak-memory", "1000",
+                "--training-seconds", "300",
+                "--num-steps", "100",
+                "--estimated-flops", "1500000000",
+                "--num-params", "50300000",
+                "--status", "keep",
+                "--lesson", "Test",
+                "--tags", "test",
+            ],
+            capture_output=True, text=True,
+            cwd=str(Path(__file__).resolve().parent),
+            env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
+        )
+        assert result.returncode == 0
+        cards = load_cards(knowledge_dir)
+        assert cards[0]["results"]["estimated_flops"] == 1.5e9
+        assert cards[0]["results"]["num_params"] == 50300000

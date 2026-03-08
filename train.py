@@ -649,3 +649,45 @@ print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
 print(f"num_steps:        {step}")
 print(f"num_params_M:     {num_params / 1e6:.1f}")
 print(f"depth:            {DEPTH}")
+
+# Auto-record experiment card to knowledge base
+try:
+    import subprocess as _sp
+    _commit_hash = _sp.run(
+        ["git", "rev-parse", "--short=7", "HEAD"],
+        capture_output=True, text=True, timeout=5,
+    ).stdout.strip()
+
+    if _commit_hash:
+        from commons import create_card, KNOWLEDGE_DIR
+        create_card(
+            knowledge_dir=KNOWLEDGE_DIR,
+            commit_id=_commit_hash,
+            hypothesis="[auto-recorded] See git diff for changes",
+            config_diff={
+                "DEPTH": DEPTH,
+                "ASPECT_RATIO": ASPECT_RATIO,
+                "HEAD_DIM": HEAD_DIM,
+                "WINDOW_PATTERN": WINDOW_PATTERN,
+                "TOTAL_BATCH_SIZE": TOTAL_BATCH_SIZE,
+                "DEVICE_BATCH_SIZE": DEVICE_BATCH_SIZE,
+                "EMBEDDING_LR": EMBEDDING_LR,
+                "MATRIX_LR": MATRIX_LR,
+                "WEIGHT_DECAY": WEIGHT_DECAY,
+            },
+            results={
+                "val_bpb": val_bpb,
+                "delta": 0.0,
+                "peak_vram_mb": peak_vram_mb,
+                "training_seconds": total_training_time,
+                "num_steps": step,
+                "estimated_flops": float(num_flops_per_token),
+                "num_params": int(num_params),
+            },
+            status="keep",
+            lesson="[auto-recorded] Agent should update with actual lesson",
+            tags=["auto_recorded"],
+        )
+        print(f"auto_card:        {_commit_hash}")
+except Exception as _e:
+    print(f"auto_card_error:  {_e}")

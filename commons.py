@@ -677,6 +677,8 @@ def _build_parser() -> argparse.ArgumentParser:
     wc.add_argument("--peak-memory", required=True, type=float, help="Peak VRAM in MB")
     wc.add_argument("--training-seconds", required=True, type=float, help="Training time in seconds")
     wc.add_argument("--num-steps", required=True, type=int, help="Number of training steps")
+    wc.add_argument("--estimated-flops", type=float, default=None, help="Estimated FLOPs per token")
+    wc.add_argument("--num-params", type=int, default=None, help="Total parameter count")
     wc.add_argument("--status", required=True, choices=["keep", "revert", "inconclusive", "crash"], help="Experiment status")
     wc.add_argument("--lesson", required=True, help="Lesson learned")
     wc.add_argument("--tags", required=True, help="Comma-separated tags")
@@ -730,6 +732,10 @@ def main() -> None:
             "training_seconds": args.training_seconds,
             "num_steps": args.num_steps,
         }
+        if args.estimated_flops is not None:
+            results["estimated_flops"] = args.estimated_flops
+        if args.num_params is not None:
+            results["num_params"] = args.num_params
 
         prior_cards = [c.strip() for c in args.prior_cards.split(",") if c.strip()] if args.prior_cards else []
 
