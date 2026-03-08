@@ -34,6 +34,8 @@ Everything from the original is preserved: `prepare.py` (untouched), `train.py` 
 - **Progress visualization** — scatter plot with running-best line for val_bpb trends
 - **145 tests** across knowledge base, director, and platform layers
 
+For a comprehensive guide covering single-agent mode, multi-agent coordination, the knowledge protocol, and cross-machine collaboration, see the **[detailed walkthrough](docs/walkthrough.md)**.
+
 ## Quick start
 
 **Requirements:** NVIDIA GPU, Apple Silicon Mac, or CPU. Python 3.10+, [uv](https://docs.astral.sh/uv/).
