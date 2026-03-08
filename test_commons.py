@@ -737,3 +737,35 @@ class TestCLI:
         assert result.returncode == 0
         assert "Meta-synthesis written to" in result.stdout
         assert (knowledge_dir / "synthesis" / "meta-synthesis.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Card validation
+# ---------------------------------------------------------------------------
+
+
+class TestCardValidation:
+    def test_rejects_empty_commit_id(self, knowledge_dir: Path):
+        with pytest.raises(ValueError, match="commit_id"):
+            _make_card(knowledge_dir, commit_id="")
+
+    def test_rejects_empty_hypothesis(self, knowledge_dir: Path):
+        with pytest.raises(ValueError, match="hypothesis"):
+            _make_card(knowledge_dir, hypothesis="")
+
+    def test_rejects_empty_tags(self, knowledge_dir: Path):
+        with pytest.raises(ValueError, match="tags"):
+            _make_card(knowledge_dir, tags=[])
+
+    def test_rejects_non_numeric_val_bpb(self, knowledge_dir: Path):
+        with pytest.raises(ValueError, match="val_bpb"):
+            _make_card(knowledge_dir, results={"val_bpb": "not_a_number", "delta": 0})
+
+    def test_rejects_invalid_status(self, knowledge_dir: Path):
+        with pytest.raises(ValueError, match="status"):
+            _make_card(knowledge_dir, status="invalid_status")
+
+    def test_accepts_all_valid_statuses(self, knowledge_dir: Path):
+        for i, status in enumerate(["keep", "revert", "inconclusive", "crash"]):
+            card = _make_card(knowledge_dir, commit_id=f"c_{status}_{i}", status=status)
+            assert card["status"] == status

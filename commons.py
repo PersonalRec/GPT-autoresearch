@@ -19,6 +19,7 @@ import os
 import platform
 import re
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,8 @@ from pathlib import Path
 # Default knowledge directory: knowledge/ relative to this script
 # ---------------------------------------------------------------------------
 KNOWLEDGE_DIR = Path(__file__).resolve().parent / "knowledge"
+
+VALID_STATUSES = {"keep", "revert", "inconclusive", "crash", "retracted"}
 
 # ---------------------------------------------------------------------------
 # Platform detection — try to import from platform_utils, fall back gracefully
@@ -67,6 +70,38 @@ def _card_filename(timestamp: str, commit_id: str) -> str:
     return f"{safe_ts}_{commit_id}.json"
 
 
+def _validate_card_inputs(commit_id, hypothesis, results, status, tags):
+    if not commit_id or not commit_id.strip():
+        raise ValueError("commit_id must be a non-empty string")
+    if not hypothesis or not hypothesis.strip():
+        raise ValueError("hypothesis must be a non-empty string")
+    if not tags:
+        raise ValueError("tags must be a non-empty list")
+    if status not in VALID_STATUSES:
+        raise ValueError(f"status must be one of {VALID_STATUSES}, got '{status}'")
+    val_bpb = results.get("val_bpb")
+    if val_bpb is not None and not isinstance(val_bpb, (int, float)):
+        raise ValueError(f"val_bpb must be numeric, got {type(val_bpb).__name__}")
+
+
+def _atomic_write_json(path: Path, data: dict) -> None:
+    """Write JSON atomically: write to temp file in same dir, then rename."""
+    content = json.dumps(data, indent=2) + "\n"
+    fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=path.stem)
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.close(fd)
+        os.replace(tmp_path, str(path))
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
 # ---------------------------------------------------------------------------
 # Library functions
 # ---------------------------------------------------------------------------
@@ -88,6 +123,7 @@ def create_card(
     Returns the card dict that was written.
     """
     knowledge_dir = Path(knowledge_dir)
+    _validate_card_inputs(commit_id, hypothesis, results, status, tags)
     _ensure_dirs(knowledge_dir)
 
     now = datetime.now(timezone.utc)
@@ -112,7 +148,7 @@ def create_card(
 
     filename = _card_filename(timestamp, commit_id)
     card_path = knowledge_dir / "cards" / filename
-    card_path.write_text(json.dumps(card, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(card_path, card)
 
     # Auto-update the index after creating a card
     update_index(knowledge_dir)
@@ -180,7 +216,7 @@ def update_index(knowledge_dir: Path | str) -> None:
     }
 
     index_path = knowledge_dir / "index.json"
-    index_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(index_path, index)
 
 
 def load_index(knowledge_dir: Path | str) -> dict:
