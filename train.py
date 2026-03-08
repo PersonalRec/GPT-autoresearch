@@ -29,7 +29,7 @@ class GPTConfig:
     n_kv_head: int = 6
     n_embd: int = 768
     window_pattern: str = "SSSL"
-    resid_dropout: float = 0.05
+    resid_dropout: float = 0.0
 
 
 def norm(x):
