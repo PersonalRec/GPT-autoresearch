@@ -487,8 +487,8 @@ FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
 
 # Model size
 DEPTH = 8               # number of transformer layers
-DEVICE_BATCH_SIZE = 32   # per-device batch size (reduced for RTX 3090)
-EVAL_BATCH_SIZE = 8      # separate eval batch size (lower to avoid OOM during eval)
+DEVICE_BATCH_SIZE = 32   # reverted to Run 1 baseline (optimal for throughput/VRAM)
+EVAL_BATCH_SIZE = 16     # separate eval batch size (low-risk increase)
 
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
