@@ -14,9 +14,10 @@ Usage (CLI):
 """
 
 import argparse
+import fcntl
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from commons import get_coverage_map, get_open_questions, load_cards
@@ -25,6 +26,8 @@ from commons import get_coverage_map, get_open_questions, load_cards
 # Default knowledge directory: knowledge/ relative to this script
 # ---------------------------------------------------------------------------
 KNOWLEDGE_DIR = Path(__file__).resolve().parent / "knowledge"
+
+STALE_CLAIM_MINUTES = 15
 
 # ---------------------------------------------------------------------------
 # Queue operations
@@ -85,68 +88,97 @@ def save_queue(knowledge_dir: Path | str, queue: dict) -> None:
     qpath.write_text(json.dumps(queue, indent=2) + "\n", encoding="utf-8")
 
 
+def _release_stale_claims(queue: dict) -> None:
+    """Release experiments that have been in_progress longer than STALE_CLAIM_MINUTES."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(minutes=STALE_CLAIM_MINUTES)
+    cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    for exp in queue.get("experiments", []):
+        if exp.get("status") == "in_progress":
+            claimed_at = exp.get("claimed_at", exp.get("created_at", ""))
+            if claimed_at and claimed_at < cutoff_str:
+                exp["status"] = "pending"
+                exp["assigned_to"] = None
+                exp.pop("claimed_at", None)
+
+
+def _with_queue_lock(knowledge_dir: Path | str, operation):
+    """Execute a queue operation while holding an exclusive file lock.
+
+    Args:
+        knowledge_dir: Path to knowledge directory
+        operation: callable(queue) -> result. May mutate queue dict.
+    Returns:
+        The return value of operation.
+    """
+    knowledge_dir = Path(knowledge_dir)
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = knowledge_dir / "queue.lock"
+
+    with open(lock_path, "w") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            queue = load_queue(knowledge_dir)
+            result = operation(queue)
+            save_queue(knowledge_dir, queue)
+            return result
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def add_to_queue(
     knowledge_dir: Path | str,
     hypothesis: str,
     category: str,
     priority: int = 5,
 ) -> dict:
-    """Add an experiment idea to the queue.
+    """Add an experiment idea to the queue. Thread-safe via file locking."""
+    def _op(queue):
+        exp_id = _next_exp_id(queue)
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        experiment = {
+            "id": exp_id,
+            "hypothesis": hypothesis,
+            "category": category,
+            "priority": priority,
+            "status": "pending",
+            "assigned_to": None,
+            "created_at": now,
+        }
+        queue["experiments"].append(experiment)
+        return experiment
 
-    Returns the newly created experiment entry.
-    """
-    queue = load_queue(knowledge_dir)
-    exp_id = _next_exp_id(queue)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    experiment = {
-        "id": exp_id,
-        "hypothesis": hypothesis,
-        "category": category,
-        "priority": priority,
-        "status": "pending",
-        "assigned_to": None,
-        "created_at": now,
-    }
-
-    queue["experiments"].append(experiment)
-    save_queue(knowledge_dir, queue)
-    return experiment
+    return _with_queue_lock(knowledge_dir, _op)
 
 
 def claim_next_experiment(
     knowledge_dir: Path | str,
     worker_id: str,
 ) -> dict | None:
-    """Claim the highest-priority pending experiment for a worker.
-
-    Priority 1 is highest.  Among equal priorities the oldest (earliest
-    created_at) experiment is chosen.  Returns the claimed experiment dict,
-    or None if no pending experiments are available.
+    """Claim the highest-priority pending experiment. Thread-safe via file locking.
+    Releases stale claims (>STALE_CLAIM_MINUTES old) before selecting.
     """
-    queue = load_queue(knowledge_dir)
-    pending = [e for e in queue["experiments"] if e["status"] == "pending"]
+    def _op(queue):
+        _release_stale_claims(queue)
+        pending = [e for e in queue["experiments"] if e["status"] == "pending"]
+        if not pending:
+            return None
+        pending.sort(key=lambda e: (e["priority"], e["created_at"]))
+        chosen = pending[0]
 
-    if not pending:
-        return None
+        for exp in queue["experiments"]:
+            if exp["id"] == chosen["id"]:
+                exp["status"] = "in_progress"
+                exp["assigned_to"] = worker_id
+                exp["claimed_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                break
 
-    # Sort by priority (ascending = higher priority first), then by created_at
-    pending.sort(key=lambda e: (e["priority"], e["created_at"]))
-    chosen = pending[0]
+        chosen["status"] = "in_progress"
+        chosen["assigned_to"] = worker_id
+        return chosen
 
-    # Mutate the experiment in the queue list
-    for exp in queue["experiments"]:
-        if exp["id"] == chosen["id"]:
-            exp["status"] = "in_progress"
-            exp["assigned_to"] = worker_id
-            break
-
-    save_queue(knowledge_dir, queue)
-
-    # Return the updated version
-    chosen["status"] = "in_progress"
-    chosen["assigned_to"] = worker_id
-    return chosen
+    return _with_queue_lock(knowledge_dir, _op)
 
 
 def complete_experiment(
@@ -154,13 +186,14 @@ def complete_experiment(
     exp_id: str,
     status: str = "completed",
 ) -> None:
-    """Mark an experiment as completed (or another terminal status)."""
-    queue = load_queue(knowledge_dir)
-    for exp in queue["experiments"]:
-        if exp["id"] == exp_id:
-            exp["status"] = status
-            break
-    save_queue(knowledge_dir, queue)
+    """Mark an experiment as completed. Thread-safe via file locking."""
+    def _op(queue):
+        for exp in queue["experiments"]:
+            if exp["id"] == exp_id:
+                exp["status"] = status
+                break
+
+    _with_queue_lock(knowledge_dir, _op)
 
 
 # ---------------------------------------------------------------------------

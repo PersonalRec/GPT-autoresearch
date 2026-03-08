@@ -16,6 +16,7 @@ from director import (
     complete_experiment,
     load_queue,
     save_queue,
+    plan_experiments,
 )
 
 
@@ -214,3 +215,52 @@ class TestCompleteExperiment:
 
         queue = load_queue(knowledge_dir)
         assert queue["experiments"][0]["status"] == "pending"
+
+
+# ---------------------------------------------------------------------------
+# Stale claims
+# ---------------------------------------------------------------------------
+
+
+class TestStaleClaims:
+    def test_stale_claim_released(self, knowledge_dir: Path):
+        from datetime import datetime, timezone, timedelta
+        exp = add_to_queue(knowledge_dir, hypothesis="Will stall", category="a")
+        claim_next_experiment(knowledge_dir, worker_id="worker-1")
+
+        # Manually backdate the claimed_at timestamp
+        queue = load_queue(knowledge_dir)
+        stale_time = (datetime.now(timezone.utc) - timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        queue["experiments"][0]["claimed_at"] = stale_time
+        save_queue(knowledge_dir, queue)
+
+        # Next claim should reclaim the stale experiment
+        reclaimed = claim_next_experiment(knowledge_dir, worker_id="worker-2")
+        assert reclaimed is not None
+        assert reclaimed["id"] == exp["id"]
+        assert reclaimed["assigned_to"] == "worker-2"
+
+    def test_fresh_claim_not_released(self, knowledge_dir: Path):
+        add_to_queue(knowledge_dir, hypothesis="First", category="a", priority=1)
+        add_to_queue(knowledge_dir, hypothesis="Second", category="b", priority=1)
+        claim_next_experiment(knowledge_dir, worker_id="worker-1")
+
+        exp = claim_next_experiment(knowledge_dir, worker_id="worker-2")
+        assert exp is not None
+        assert exp["hypothesis"] == "Second"
+
+
+# ---------------------------------------------------------------------------
+# File locking
+# ---------------------------------------------------------------------------
+
+
+class TestFileLocking:
+    def test_rapid_sequential_adds(self, knowledge_dir: Path):
+        for i in range(10):
+            add_to_queue(knowledge_dir, hypothesis=f"Exp {i}", category="test")
+        queue = load_queue(knowledge_dir)
+        assert len(queue["experiments"]) == 10
+        for exp in queue["experiments"]:
+            assert "id" in exp
+            assert "status" in exp
