@@ -363,6 +363,117 @@ def test_noise_robustness(model, tokenizer, baseline_bpb, time_budget):
 
 
 # ---------------------------------------------------------------------------
+# Test 5: Adversarial token search (gradient-free worst-case input)
+# ---------------------------------------------------------------------------
+
+def test_adversarial_search(model, tokenizer, baseline_bpb, time_budget):
+    """
+    Gradient-free search for the worst-case input sequence.
+    Starts from real validation sequences (not random tokens) and iteratively
+    mutates them to maximize per-sequence BPB. Uses a simple evolutionary
+    strategy: keep mutations that increase loss.
+
+    This finds the model's absolute worst case on semi-natural inputs.
+    """
+    t0 = time.time()
+    val_loader = make_dataloader(tokenizer, 8, MAX_SEQ_LEN, "val")
+    token_bytes = get_token_bytes()
+    vocab_size = tokenizer.get_vocab_size()
+
+    # Seed with real validation sequences — use 2 batches for more diversity
+    candidates = []
+    for _ in range(2):
+        x_seed, y_seed, _ = next(val_loader)
+        mx.eval(x_seed, y_seed)
+        for i in range(x_seed.shape[0]):
+            seq = x_seed[i:i+1]
+            tgt = y_seed[i:i+1]
+            loss = model(seq, tgt, reduction="none").reshape(-1)
+            nb = mx.take(token_bytes, tgt.reshape(-1), axis=0)
+            mask = nb > 0
+            nats = mx.sum(loss * mask).item()
+            nbytes = int(mx.sum(nb).item())
+            mx.eval()
+            bpb = nats / (math.log(2) * nbytes) if nbytes > 0 else 0.0
+            candidates.append((np.array(seq.reshape(-1)), bpb))
+
+    generations = 0
+
+    while time.time() - t0 < time_budget:
+        # Sort by BPB descending — focus effort on most promising candidates
+        candidates.sort(key=lambda c: c[1], reverse=True)
+        active = min(len(candidates), 8)
+
+        # Batch all mutations together for a single forward pass
+        mutants = []
+        mutant_indices = []
+        for idx in range(active):
+            seq_np, current_bpb = candidates[idx]
+            base_rate = 0.02 + 0.18 * (1.0 - idx / active)
+            mutant = seq_np.copy()
+            n_mutations = max(1, int(len(mutant) * base_rate))
+            positions = np.random.choice(len(mutant), n_mutations, replace=False)
+            mutant[positions] = np.random.randint(4, vocab_size, size=n_mutations)
+            mutants.append(mutant)
+            mutant_indices.append(idx)
+
+        # Add crossover children
+        if len(candidates) >= 2:
+            for _ in range(min(4, active)):
+                i, j = np.random.choice(min(active, len(candidates)), 2, replace=False)
+                parent_a = candidates[i][0]
+                parent_b = candidates[j][0]
+                cp = np.random.randint(len(parent_a) // 4, 3 * len(parent_a) // 4)
+                child = np.concatenate([parent_a[:cp], parent_b[cp:]])
+                mutants.append(child)
+                mutant_indices.append(-1)  # crossover child
+
+        if not mutants:
+            break
+
+        # Batch forward pass
+        batch = mx.array(np.stack(mutants), dtype=mx.int32)
+        inputs = batch[:, :-1]
+        targets = batch[:, 1:]
+        loss = model(inputs, targets, reduction="none")  # (batch, seq_len)
+        mx.eval(loss)
+
+        # Evaluate each
+        for k in range(len(mutants)):
+            loss_k = loss[k].reshape(-1)
+            tgt_k = targets[k].reshape(-1)
+            nb = mx.take(token_bytes, tgt_k, axis=0)
+            mask = nb > 0
+            nats = mx.sum(loss_k * mask).item()
+            nbytes = int(mx.sum(nb).item())
+            if nbytes > 0:
+                mutant_bpb = nats / (math.log(2) * nbytes)
+                idx = mutant_indices[k]
+                if idx >= 0:
+                    # Mutation — replace if better
+                    if mutant_bpb > candidates[idx][1]:
+                        candidates[idx] = (mutants[k], mutant_bpb)
+                else:
+                    # Crossover child — replace worst if better
+                    if mutant_bpb > candidates[-1][1]:
+                        candidates[-1] = (mutants[k], mutant_bpb)
+
+        generations += 1
+
+    # Find the worst across all candidates
+    best_seq, best_bpb = max(candidates, key=lambda c: c[1])
+
+    return TestResult(
+        test_name="adversarial_search",
+        adversarial_bpb=best_bpb,
+        baseline_bpb=baseline_bpb,
+        robustness_gap=best_bpb - baseline_bpb,
+        description=f"worst_found={best_bpb:.3f} generations={generations} candidates={len(candidates)}",
+        num_tokens_tested=generations * len(candidates) * MAX_SEQ_LEN,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -373,6 +484,7 @@ def run_all_tests(model, tokenizer, baseline_bpb, time_budget):
         test_subgroup_disparity,
         test_window_boundary_exploit,
         test_noise_robustness,
+        test_adversarial_search,
     ]
     per_test_budget = time_budget / len(tests)
     results = []
