@@ -325,7 +325,7 @@ class TestDirectorCLI:
         result = subprocess.run(
             ["python", "director.py", "plan"],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -336,7 +336,7 @@ class TestDirectorCLI:
         result = subprocess.run(
             ["python", "director.py", "status"],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -352,7 +352,7 @@ class TestDirectorCLI:
                 "--priority", "2",
             ],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -361,7 +361,7 @@ class TestDirectorCLI:
     def test_status_after_add(self, knowledge_dir: Path):
         import subprocess
         env = {**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)}
-        cwd = str(Path(__file__).resolve().parent)
+        cwd = str(Path(__file__).resolve().parent.parent)
         # Add an experiment
         subprocess.run(
             ["python", "director.py", "add", "--hypothesis", "Test", "--category", "test"],

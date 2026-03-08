@@ -149,9 +149,10 @@ commons.py          — knowledge base interface (library + CLI)
 director.py         — experiment orchestration and queue management
 program.md          — worker agent instructions
 director.md         — director agent instructions
-test_commons.py     — knowledge base tests (84 tests)
-test_director.py    — director and queue tests (27 tests)
-test_platform.py    — platform abstraction tests (34 tests)
+tests/
+  test_commons.py   — knowledge base tests (84 tests)
+  test_director.py  — director and queue tests (27 tests)
+  test_platform.py  — platform abstraction tests (34 tests)
 knowledge/
   cards/            — one JSON per experiment (the raw data)
   synthesis/        — session reports + meta-synthesis (the summaries)
@@ -206,9 +207,9 @@ This fork auto-detects your hardware:
 uv run pytest
 
 # Run specific test files
-uv run pytest test_commons.py -v
-uv run pytest test_director.py -v
-uv run pytest test_platform.py -v
+uv run pytest tests/test_commons.py -v
+uv run pytest tests/test_director.py -v
+uv run pytest tests/test_platform.py -v
 ```
 
 ## Credits

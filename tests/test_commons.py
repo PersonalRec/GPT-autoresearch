@@ -632,7 +632,7 @@ class TestCLI:
             ["python", "commons.py", "read-brief"],
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -671,7 +671,7 @@ class TestCLI:
             ],
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -690,7 +690,7 @@ class TestCLI:
             ["python", "commons.py", "coverage"],
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -704,7 +704,7 @@ class TestCLI:
             ["python", "commons.py", "update-index"],
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -718,7 +718,7 @@ class TestCLI:
             ["python", "commons.py", "synthesize", "--session", "mar8"],
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -733,7 +733,7 @@ class TestCLI:
             ["python", "commons.py", "update-meta"],
             capture_output=True,
             text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -834,7 +834,7 @@ class TestExperimentLineage:
                 "--prior-cards", c1["id"],
             ],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -887,7 +887,7 @@ class TestStructuredMetadata:
                 "--tags", "test",
             ],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
@@ -933,7 +933,7 @@ class TestCLIMalformedInput:
                 "--config-diff", "NOT VALID JSON",
             ],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode != 0
@@ -950,7 +950,7 @@ class TestCLIMalformedInput:
                 "--lesson", "test", "--tags", "test",
             ],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode != 0
@@ -983,7 +983,7 @@ class TestPlotCommand:
         result = subprocess.run(
             ["python", "commons.py", "plot"],
             capture_output=True, text=True,
-            cwd=str(Path(__file__).resolve().parent),
+            cwd=str(Path(__file__).resolve().parent.parent),
             env={**__import__("os").environ, "KNOWLEDGE_DIR": str(knowledge_dir)},
         )
         assert result.returncode == 0
