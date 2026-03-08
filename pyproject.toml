@@ -5,7 +5,7 @@ description = "Autonomous pretraining research swarm"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "kernels>=0.11.7",
+    "kernels>=0.11.7; platform_machine != 'aarch64'",
     "matplotlib>=3.10.8",
     "numpy>=2.2.6",
     "pandas>=2.3.3",
@@ -13,15 +13,26 @@ dependencies = [
     "requests>=2.32.0",
     "rustbpe>=0.1.0",
     "tiktoken>=0.11.0",
-    "torch==2.9.1",
+    "torch>=2.9",
 ]
+
+[project.optional-dependencies]
+jetson = ["flash-attn==2.8.3", "triton>=3.5.1"]
 
 [tool.uv.sources]
 torch = [
-    { index = "pytorch-cu128" },
+    { index = "pytorch-cu128", marker = "platform_machine != 'aarch64'" },
+    { index = "jetson", marker = "platform_machine == 'aarch64'" },
 ]
+flash-attn = [{ index = "jetson" }]
+triton = [{ index = "jetson" }]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "jetson"
+url = "https://pypi.jetson-ai-lab.io/jp6/cu126"
 explicit = true

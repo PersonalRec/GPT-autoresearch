@@ -15,12 +15,78 @@ from dataclasses import dataclass, asdict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
-from kernels import get_kernel
+# ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+
 cap = torch.cuda.get_device_capability()
-# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
-repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
-fa3 = get_kernel(repo).flash_attn_interface
+_GPU_MEM_GB = torch.cuda.get_device_properties(0).total_memory / 1024**3
+_IS_LOW_MEMORY = _GPU_MEM_GB < 16
+
+# --- Attention backend: FA3 (Hopper) → FA2 (Ampere/Jetson) → SDPA fallback ---
+_attn_func = None
+_ATTN_BACKEND = "sdpa"
+
+# Try FA3 first (Hopper GPUs with kernels package)
+if cap >= (9, 0):
+    try:
+        from kernels import get_kernel
+        repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
+        fa3 = get_kernel(repo).flash_attn_interface
+        _attn_func = fa3.flash_attn_func
+        _ATTN_BACKEND = "fa3"
+    except Exception as e:
+        print(f"FA3 not available ({e})")
+
+# Try FA2 (works on Ampere sm_80+, including Jetson Orin sm_87)
+if _attn_func is None:
+    try:
+        from flash_attn import flash_attn_func as _fa2_func
+        _attn_func = _fa2_func
+        _ATTN_BACKEND = "fa2"
+    except Exception as e:
+        print(f"FA2 not available ({e})")
+
+# SDPA fallback (any GPU)
+if _attn_func is None:
+    def _sdpa_attn(q, k, v, causal=True, window_size=(-1, 0)):
+        B, T, Hq, D = q.shape
+        _, _, Hkv, _ = k.shape
+        if Hq != Hkv:
+            k = k.repeat_interleave(Hq // Hkv, dim=2)
+            v = v.repeat_interleave(Hq // Hkv, dim=2)
+        q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        left = window_size[0]
+        if left < 0 or left >= T:
+            out = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
+        else:
+            rows = torch.arange(T, device=q.device).unsqueeze(1)
+            cols = torch.arange(T, device=q.device).unsqueeze(0)
+            mask = (cols <= rows) & (cols >= rows - left)
+            out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask)
+        return out.transpose(1, 2)
+    _attn_func = _sdpa_attn
+    _ATTN_BACKEND = "sdpa"
+
+print(f"Platform: {torch.cuda.get_device_name()} | {_GPU_MEM_GB:.1f} GB | sm_{cap[0]}{cap[1]} | attn: {_ATTN_BACKEND} | low_mem: {_IS_LOW_MEMORY}")
+
+# --- torch.compile: use if Triton is available, otherwise eager ---
+_HAS_TRITON = False
+try:
+    import triton  # noqa: F401
+    _HAS_TRITON = True
+except ImportError:
+    print("Triton not available, running without torch.compile")
+
+def _maybe_compile(fn=None, **kwargs):
+    """Conditionally apply torch.compile — no-op when Triton is missing."""
+    if fn is not None:
+        return torch.compile(fn, **kwargs) if _HAS_TRITON else fn
+    def decorator(f):
+        return torch.compile(f, **kwargs) if _HAS_TRITON else f
+    return decorator
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
@@ -89,7 +155,7 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        y = _attn_func(q, k, v, causal=True, window_size=window_size)
         y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
@@ -140,7 +206,7 @@ class GPT(nn.Module):
             for i in range(config.n_layer) if has_ve(i, config.n_layer)
         })
         # Rotary embeddings
-        self.rotary_seq_len = config.sequence_len * 10
+        self.rotary_seq_len = config.sequence_len if _IS_LOW_MEMORY else config.sequence_len * 10
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
@@ -253,12 +319,21 @@ class GPT(nn.Module):
             dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0),
             dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),
         ]
+        muon_chunk = 8 if _IS_LOW_MEMORY else None  # chunk to reduce optimizer peak VRAM
         for shape in sorted({p.shape for p in matrix_params}):
             group_params = [p for p in matrix_params if p.shape == shape]
-            param_groups.append(dict(
-                kind='muon', params=group_params, lr=matrix_lr,
-                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
-            ))
+            if muon_chunk:
+                for ci in range(0, len(group_params), muon_chunk):
+                    chunk = group_params[ci:ci+muon_chunk]
+                    param_groups.append(dict(
+                        kind='muon', params=chunk, lr=matrix_lr,
+                        momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
+                    ))
+            else:
+                param_groups.append(dict(
+                    kind='muon', params=group_params, lr=matrix_lr,
+                    momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
+                ))
         optimizer = MuonAdamW(param_groups)
         for group in optimizer.param_groups:
             group["initial_lr"] = group["lr"]
@@ -275,16 +350,20 @@ class GPT(nn.Module):
         for i, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
             ve = self.value_embeds[str(i)](idx) if str(i) in self.value_embeds else None
-            x = block(x, ve, cos_sin, self.window_sizes[i])
+            if _IS_LOW_MEMORY:
+                x = torch_checkpoint(block, x, ve, cos_sin, self.window_sizes[i], use_reentrant=False)
+            else:
+                x = block(x, ve, cos_sin, self.window_sizes[i])
         x = norm(x)
 
         softcap = 15
         logits = self.lm_head(x)
-        logits = logits.float()
+        if not _IS_LOW_MEMORY:
+            logits = logits.float()
         logits = softcap * torch.tanh(logits / softcap)
 
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1),
+            loss = F.cross_entropy(logits.float().view(-1, logits.size(-1)), targets.view(-1),
                                    ignore_index=-1, reduction=reduction)
             return loss
         return logits
@@ -301,7 +380,7 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
-@torch.compile(dynamic=False, fullgraph=True)
+@_maybe_compile(dynamic=False, fullgraph=True)
 def adamw_step_fused(p, grad, exp_avg, exp_avg_sq, step_t, lr_t, beta1_t, beta2_t, eps_t, wd_t):
     p.mul_(1 - lr_t * wd_t)
     exp_avg.lerp_(grad, 1 - beta1_t)
@@ -312,7 +391,7 @@ def adamw_step_fused(p, grad, exp_avg, exp_avg_sq, step_t, lr_t, beta1_t, beta2_
     step_size = lr_t / bias1
     p.add_(exp_avg / denom, alpha=-step_size)
 
-@torch.compile(dynamic=False, fullgraph=True)
+@_maybe_compile(dynamic=False, fullgraph=True)
 def muon_step_fused(stacked_grads, stacked_params, momentum_buffer, second_momentum_buffer,
                     momentum_t, lr_t, wd_t, beta2_t, ns_steps, red_dim):
     # Nesterov momentum
@@ -447,7 +526,8 @@ FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
 
 # Model size
 DEPTH = 8               # number of transformer layers
-DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
+DEVICE_BATCH_SIZE = 32 if _IS_LOW_MEMORY else 128  # auto-reduced for <=16GB GPUs
+EVAL_BATCH_SIZE = 32 if _IS_LOW_MEMORY else None     # separate eval batch size for low-mem
 
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
@@ -459,7 +539,26 @@ torch.cuda.manual_seed(42)
 torch.set_float32_matmul_precision("high")
 device = torch.device("cuda")
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-H100_BF16_PEAK_FLOPS = 989.5e12
+def _measure_gpu_peak_flops(n=4096, warmup=50, iters=50):
+    """Empirically measure peak BF16 FLOPS via large matmul. Works on any GPU."""
+    a = torch.randn(n, n, dtype=torch.bfloat16, device="cuda")
+    b = torch.randn(n, n, dtype=torch.bfloat16, device="cuda")
+    for _ in range(warmup):
+        torch.mm(a, b)
+    torch.cuda.synchronize()
+    t0 = time.time()
+    for _ in range(iters):
+        torch.mm(a, b)
+    torch.cuda.synchronize()
+    elapsed = time.time() - t0
+    flops = 2 * n**3 * iters / elapsed
+    del a, b
+    torch.cuda.empty_cache()
+    return flops
+
+print("Measuring GPU peak BF16 FLOPS...")
+GPU_BF16_PEAK_FLOPS = _measure_gpu_peak_flops()
+print(f"GPU peak BF16 FLOPS: {GPU_BF16_PEAK_FLOPS:.1e}")
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
@@ -504,7 +603,7 @@ optimizer = model.setup_optimizer(
     weight_decay=WEIGHT_DECAY,
 )
 
-model = torch.compile(model, dynamic=False)
+model = _maybe_compile(model, dynamic=False)
 
 train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -583,7 +682,7 @@ while True:
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
     pct_done = 100 * progress
     tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / H100_BF16_PEAK_FLOPS
+    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / GPU_BF16_PEAK_FLOPS
     remaining = max(0, TIME_BUDGET - total_training_time)
 
     print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
@@ -606,15 +705,27 @@ print()  # newline after \r training log
 
 total_tokens = step * TOTAL_BATCH_SIZE
 
-# Final eval
+# Final eval (with OOM protection on low-memory GPUs)
 model.eval()
-with autocast_ctx:
-    val_bpb = evaluate_bpb(model, tokenizer, DEVICE_BATCH_SIZE)
+eval_bs = EVAL_BATCH_SIZE if EVAL_BATCH_SIZE else DEVICE_BATCH_SIZE
+val_bpb = None
+for bs in [eval_bs, max(1, eval_bs // 2), max(1, eval_bs // 4)]:
+    try:
+        torch.cuda.empty_cache()
+        with autocast_ctx:
+            val_bpb = evaluate_bpb(model, tokenizer, bs)
+        break
+    except torch.cuda.OutOfMemoryError:
+        print(f"Eval OOM at batch_size={bs}, trying smaller...")
+        torch.cuda.empty_cache()
+if val_bpb is None:
+    print("FAIL: eval OOM at all batch sizes")
+    exit(1)
 
 # Final summary
 t_end = time.time()
 startup_time = t_start_training - t_start
-steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / H100_BF16_PEAK_FLOPS if total_training_time > 0 else 0
+steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / GPU_BF16_PEAK_FLOPS if total_training_time > 0 else 0
 peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
 
 print("---")
