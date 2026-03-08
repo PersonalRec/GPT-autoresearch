@@ -15,12 +15,35 @@ from dataclasses import dataclass, asdict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
-from kernels import get_kernel
-cap = torch.cuda.get_device_capability()
-# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
-repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
-fa3 = get_kernel(repo).flash_attn_interface
+# Try to load FA3 kernel; fall back to PyTorch SDPA on unsupported platforms
+_USE_FA3 = False
+try:
+    from kernels import get_kernel
+    cap = torch.cuda.get_device_capability()
+    repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
+    fa3 = get_kernel(repo).flash_attn_interface
+    _USE_FA3 = True
+except (FileNotFoundError, ImportError, OSError) as e:
+    print(f"FA3 kernel not available ({e}), using PyTorch SDPA fallback")
+    fa3 = None
+
+# Check Triton availability for torch.compile
+_HAS_TRITON = False
+try:
+    import triton  # noqa: F401
+    _HAS_TRITON = True
+except ImportError:
+    print("Triton not available, running without torch.compile")
+
+def _maybe_compile(fn=None, **kwargs):
+    """Conditionally apply torch.compile — no-op when Triton is missing."""
+    if fn is not None:
+        return torch.compile(fn, **kwargs) if _HAS_TRITON else fn
+    def decorator(f):
+        return torch.compile(f, **kwargs) if _HAS_TRITON else f
+    return decorator
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
@@ -89,7 +112,20 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        if _USE_FA3:
+            y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        else:
+            # SDPA path: transpose to (B, H, T, D)
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+            # Handle GQA: repeat k,v heads to match q heads
+            if self.n_kv_head < self.n_head:
+                reps = self.n_head // self.n_kv_head
+                k = k.repeat_interleave(reps, dim=1)
+                v = v.repeat_interleave(reps, dim=1)
+            y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+            y = y.transpose(1, 2)  # back to (B, T, H, D)
         y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
@@ -140,7 +176,7 @@ class GPT(nn.Module):
             for i in range(config.n_layer) if has_ve(i, config.n_layer)
         })
         # Rotary embeddings
-        self.rotary_seq_len = config.sequence_len * 10
+        self.rotary_seq_len = config.sequence_len
         cos, sin = self._precompute_rotary_embeddings(self.rotary_seq_len, head_dim)
         self.register_buffer("cos", cos, persistent=False)
         self.register_buffer("sin", sin, persistent=False)
@@ -253,12 +289,15 @@ class GPT(nn.Module):
             dict(kind='adamw', params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0),
             dict(kind='adamw', params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),
         ]
+        MUON_GROUP_CHUNK = 8
         for shape in sorted({p.shape for p in matrix_params}):
             group_params = [p for p in matrix_params if p.shape == shape]
-            param_groups.append(dict(
-                kind='muon', params=group_params, lr=matrix_lr,
-                momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
-            ))
+            for ci in range(0, len(group_params), MUON_GROUP_CHUNK):
+                chunk = group_params[ci:ci+MUON_GROUP_CHUNK]
+                param_groups.append(dict(
+                    kind='muon', params=chunk, lr=matrix_lr,
+                    momentum=0.95, ns_steps=5, beta2=0.95, weight_decay=weight_decay,
+                ))
         optimizer = MuonAdamW(param_groups)
         for group in optimizer.param_groups:
             group["initial_lr"] = group["lr"]
@@ -275,16 +314,17 @@ class GPT(nn.Module):
         for i, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
             ve = self.value_embeds[str(i)](idx) if str(i) in self.value_embeds else None
-            x = block(x, ve, cos_sin, self.window_sizes[i])
+            ws = self.window_sizes[i]
+            x = torch_checkpoint(block, x, ve, cos_sin, ws, use_reentrant=False)
         x = norm(x)
 
+        # Softcap in bf16 to avoid fp32 VRAM spike
         softcap = 15
         logits = self.lm_head(x)
-        logits = logits.float()
         logits = softcap * torch.tanh(logits / softcap)
 
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1),
+            loss = F.cross_entropy(logits.float().view(-1, logits.size(-1)), targets.view(-1),
                                    ignore_index=-1, reduction=reduction)
             return loss
         return logits
@@ -301,7 +341,7 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
-@torch.compile(dynamic=False, fullgraph=True)
+@_maybe_compile(dynamic=False, fullgraph=True)
 def adamw_step_fused(p, grad, exp_avg, exp_avg_sq, step_t, lr_t, beta1_t, beta2_t, eps_t, wd_t):
     p.mul_(1 - lr_t * wd_t)
     exp_avg.lerp_(grad, 1 - beta1_t)
@@ -312,7 +352,7 @@ def adamw_step_fused(p, grad, exp_avg, exp_avg_sq, step_t, lr_t, beta1_t, beta2_
     step_size = lr_t / bias1
     p.add_(exp_avg / denom, alpha=-step_size)
 
-@torch.compile(dynamic=False, fullgraph=True)
+@_maybe_compile(dynamic=False, fullgraph=True)
 def muon_step_fused(stacked_grads, stacked_params, momentum_buffer, second_momentum_buffer,
                     momentum_t, lr_t, wd_t, beta2_t, ns_steps, red_dim):
     # Nesterov momentum
@@ -447,7 +487,8 @@ FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
 
 # Model size
 DEPTH = 8               # number of transformer layers
-DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
+DEVICE_BATCH_SIZE = 32   # per-device batch size (reduced for RTX 3090)
+EVAL_BATCH_SIZE = 8      # separate eval batch size (lower to avoid OOM during eval)
 
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
@@ -459,7 +500,24 @@ torch.cuda.manual_seed(42)
 torch.set_float32_matmul_precision("high")
 device = torch.device("cuda")
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-H100_BF16_PEAK_FLOPS = 989.5e12
+def _get_gpu_peak_flops():
+    """Get peak BF16 FLOPS for current GPU."""
+    gpu_name = torch.cuda.get_device_name().lower()
+    flops_lookup = {
+        "h100": 989.5e12,
+        "a100": 312e12,
+        "3090": 142.6e12,
+        "4090": 330.3e12,
+        "4080": 242.5e12,
+        "3080": 119.5e12,
+        "3070": 81.1e12,
+    }
+    for key, flops in flops_lookup.items():
+        if key in gpu_name:
+            return flops
+    return 989.5e12  # fallback to H100
+
+GPU_BF16_PEAK_FLOPS = _get_gpu_peak_flops()
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
@@ -504,7 +562,7 @@ optimizer = model.setup_optimizer(
     weight_decay=WEIGHT_DECAY,
 )
 
-model = torch.compile(model, dynamic=False)
+model = _maybe_compile(model, dynamic=False)
 
 train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -583,7 +641,7 @@ while True:
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
     pct_done = 100 * progress
     tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / H100_BF16_PEAK_FLOPS
+    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / GPU_BF16_PEAK_FLOPS
     remaining = max(0, TIME_BUDGET - total_training_time)
 
     print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
@@ -606,15 +664,35 @@ print()  # newline after \r training log
 
 total_tokens = step * TOTAL_BATCH_SIZE
 
-# Final eval
+# Save checkpoint before eval (in case eval OOMs)
+try:
+    state_dict = model._orig_mod.state_dict() if hasattr(model, '_orig_mod') else model.state_dict()
+    torch.save(state_dict, "checkpoint_pre_eval.pt")
+    print("Saved checkpoint_pre_eval.pt")
+except Exception as e:
+    print(f"Warning: could not save pre-eval checkpoint: {e}")
+
+# Final eval with OOM protection
 model.eval()
-with autocast_ctx:
-    val_bpb = evaluate_bpb(model, tokenizer, DEVICE_BATCH_SIZE)
+val_bpb = None
+for eval_bs in [EVAL_BATCH_SIZE, 4, 2]:
+    try:
+        torch.cuda.empty_cache()
+        with autocast_ctx:
+            val_bpb = evaluate_bpb(model, tokenizer, eval_bs)
+        print(f"Eval completed with batch_size={eval_bs}")
+        break
+    except torch.cuda.OutOfMemoryError:
+        print(f"Eval OOM at batch_size={eval_bs}, trying smaller...")
+        torch.cuda.empty_cache()
+if val_bpb is None:
+    print("FAIL: Eval failed at all batch sizes")
+    exit(1)
 
 # Final summary
 t_end = time.time()
 startup_time = t_start_training - t_start
-steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / H100_BF16_PEAK_FLOPS if total_training_time > 0 else 0
+steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / GPU_BF16_PEAK_FLOPS if total_training_time > 0 else 0
 peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
 
 print("---")
