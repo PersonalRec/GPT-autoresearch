@@ -110,8 +110,8 @@ ghi9012	1.950	1.890	3.904	adversarial_search	22.3	discard	val_bpb great but robu
 
 LOOP FOREVER:
 
-1. Look at the current results: last kept val_bpb, robustness_gap, and per-test breakdown
-2. Decide what to change in `train.py` (and optionally `test_protocol.py`) based on the adversarial findings
+1. **Review history before each experiment.** Read `loop_results.tsv`, `results.tsv`, and `dojo_results.tsv` to understand the full trajectory — what was tried, what worked, what failed, and what failure modes were found. This context must inform every decision. Do not repeat experiments that already failed. Build on what worked.
+2. Decide what to change in `train.py` (and optionally `test_protocol.py`) based on the adversarial findings AND the full history of previous iterations.
 3. `git add train.py && git commit -m "experiment: <description>"`
 4. Run Phase 1: `uv run train.py > train.log 2>&1`
 5. Check training: `grep "^val_bpb:\|^peak_vram_mb:" train.log`
@@ -119,10 +119,19 @@ LOOP FOREVER:
 7. Run Phase 2: `uv run run_dojo.py > dojo.log 2>&1`
 8. Check adversarial: `grep "^robustness_gap:\|^worst_test:" dojo.log`
 9. Read full breakdown: `grep "tests_summary:" -A 10 dojo.log`
-10. Apply keep/revert decision (see rules above)
-11. If keep: `git add loop_results.tsv && git commit --amend --no-edit`
-12. If discard: record in tsv, then `git reset --hard <previous kept commit>`
+10. Log results to `loop_results.tsv` — **always log, even discards**. The full history is critical for future iterations.
+11. Apply keep/revert decision (see rules above)
+12. If keep: `git add loop_results.tsv results.tsv dojo_results.tsv && git commit --amend --no-edit`. Then `git push` so progress is saved remotely (protects against machine crashes overnight and lets you monitor from anywhere). Also merge to master and push master so the main branch always reflects the best known state.
+13. If discard: `git add loop_results.tsv && git commit --amend --no-edit` (keep the log entry), then `git reset --soft <previous kept commit>` and re-commit just the updated TSVs so the history of what was tried is never lost.
+
+**Preserving iteration history is mandatory.** Every commit message must reference what the previous DOJO findings were and why this experiment was chosen. Example:
+
+```
+experiment: widen sliding window to SSLL — DOJO found 1.1 BPB gap at window boundary (loop iter 3, prev val_bpb=2.01, prev gap=1.52)
+```
+
+The TSVs are the memory of the loop. Without them, the agent repeats mistakes. Always commit them. Always read them before planning the next experiment.
 
 **Total time per experiment: ~12 minutes** (5 min train + ~2 min compile/eval + 5 min adversarial). Expect ~5 experiments/hour, ~40 overnight.
 
-**NEVER STOP**: Once the loop has begun, do NOT pause to ask the human. The loop runs until manually interrupted. If you run out of training ideas, read the adversarial test breakdown for inspiration — the model's weaknesses are your roadmap.
+**NEVER STOP**: Once the loop has begun, do NOT pause to ask the human. The loop runs until manually interrupted. If you run out of training ideas, read the adversarial test breakdown AND the full TSV history for inspiration — the model's weaknesses are your roadmap, and past experiments tell you what angles have already been explored.
