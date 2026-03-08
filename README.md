@@ -1,72 +1,133 @@
-# autoresearch
+# autoresearch_mlx
 
-![teaser](progress.png)
+Autonomous AI research on Apple Silicon, powered by [MLX](https://github.com/ml-explore/mlx).
 
-*One day, frontier AI research used to be done by meat computers in between eating, sleeping, having other fun, and synchronizing once in a while using sound wave interconnect in the ritual of "group meeting". That era is long gone. Research is now entirely the domain of autonomous swarms of AI agents running across compute cluster megastructures in the skies. The agents claim that we are now in the 10,205th generation of the code base, in any case no one could tell if that's right or wrong as the "code" is now a self-modifying binary that has grown beyond human comprehension. This repo is the story of how it all began. -@karpathy, March 2026*.
+A native MLX rewrite of [Karpathy's autoresearch](https://github.com/karpathy/autoresearch). Give an AI agent a real LLM training setup on your Mac and let it experiment autonomously overnight. It modifies the code, trains for 5 minutes, checks if the result improved, keeps or discards, and repeats. You wake up in the morning to a log of experiments and (hopefully) a better model.
 
-The idea: give an AI agent a small but real LLM training setup and let it experiment autonomously overnight. It modifies the code, trains for 5 minutes, checks if the result improved, keeps or discards, and repeats. You wake up in the morning to a log of experiments and (hopefully) a better model. The training code here is a simplified single-GPU implementation of [nanochat](https://github.com/karpathy/nanochat). The core idea is that you're not touching any of the Python files like you normally would as a researcher. Instead, you are programming the `program.md` Markdown files that provide context to the AI agents and set up your autonomous research org. The default `program.md` in this repo is intentionally kept as a bare bones baseline, though it's obvious how one would iterate on it over time to find the "research org code" that achieves the fastest research progress, how you'd add more agents to the mix, etc. A bit more context on this project is here in this [tweet](https://x.com/karpathy/status/2029701092347630069).
+## Why MLX, not PyTorch MPS?
 
-## How it works
+PyTorch's MPS backend is a compatibility shim -- it maps CUDA abstractions onto Metal. MLX is built from the ground up for Apple Silicon. The difference matters:
 
-The repo is deliberately kept small and only really has a three files that matter:
+| Feature | PyTorch MPS | MLX |
+|---------|-------------|-----|
+| torch.compile | Disabled | mx.compile works |
+| FlashAttention | Unavailable | mx.fast.scaled_dot_product_attention |
+| Memory model | CUDA-style (.to()) | Unified (zero-copy) |
+| Precision | fp16 ~20% speedup | bfloat16 native |
 
-- **`prepare.py`** — fixed constants, one-time data prep (downloads training data, trains a BPE tokenizer), and runtime utilities (dataloader, evaluation). Not modified.
-- **`train.py`** — the single file the agent edits. Contains the full GPT model, optimizer (Muon + AdamW), and training loop. Everything is fair game: architecture, hyperparameters, optimizer, batch size, etc. **This file is edited and iterated on by the agent**.
-- **`program.md`** — baseline instructions for one agent. Point your agent here and let it go. **This file is edited and iterated on by the human**.
+With MLX, Apple Silicon becomes a genuine research platform rather than a second-class citizen running someone else's abstractions.
 
-By design, training runs for a **fixed 5-minute time budget** (wall clock, excluding startup/compilation), regardless of the details of your compute. The metric is **val_bpb** (validation bits per byte) — lower is better, and vocab-size-independent so architectural changes are fairly compared.
+## The Memory Advantage Thesis
 
-## Quick start
+Apple Silicon's unified memory architecture shares a single pool between CPU and GPU -- no PCIe copies, no VRAM limits separate from system RAM. A MacBook Pro with 128GB unified memory can fit models and batch sizes that a 24GB NVIDIA card simply cannot. This project leans into that advantage:
 
-**Requirements:** A single NVIDIA GPU (tested on H100), Python 3.10+, [uv](https://docs.astral.sh/uv/).
+- **MoE architectures**: All experts resident in memory, only a subset activated per token
+- **Large batch training**: batch_size=256 or 512 where NVIDIA caps out at 32
+- **Full precision**: Train at bfloat16 without quantizing to 4-bit just to fit
+- **Long context**: KV caches for 8192-token sequences without OOM
+
+The tradeoff: fewer FLOPS than NVIDIA. So we run experiments that exploit memory abundance, not raw compute speed.
+
+## Choose Your Adventure
+
+### Mode A: Train from scratch (default)
+
+Train a GPT model from scratch on the ClimbMix dataset, just like Karpathy's original:
 
 ```bash
-
-# 1. Install uv project manager (if you don't already have it)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 2. Install dependencies
-uv sync
-
-# 3. Download data and train tokenizer (one-time, ~2 min)
+# 1. Download data and train tokenizer (one-time, ~2 min)
 uv run prepare.py
 
-# 4. Manually run a single training experiment (~5 min)
+# 2. Train for 5 minutes
 uv run train.py
 ```
 
-If the above commands all work ok, your setup is working and you can go into autonomous research mode.
+The agent modifies `train.py` -- architecture, optimizer, hyperparameters, batch size, everything is fair game.
 
-**Platforms support**. This code currently requires that you have a single NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. The code is just a demonstration and I don't know how much I'll support it going forward. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
+### Mode B: Fine-tune an existing model
 
-## Running the agent
+Fine-tune a pretrained model (Llama, Qwen, Gemma, Mistral, etc.) with LoRA:
 
-Simply spin up your Claude/Codex or whatever you want in this repo (and disable all permissions), then you can prompt something like:
+```bash
+# 1. See what models fit your machine
+python models.py
 
-```
-Hi have a look at program.md and let's kick off a new experiment! let's do the setup first.
-```
+# 2. Prepare a dataset
+python models.py --prep-data alpaca
 
-The `program.md` file is essentially a super lightweight "skill".
-
-## Project structure
-
-```
-prepare.py      — constants, data prep + runtime utilities (do not modify)
-train.py        — model, optimizer, training loop (agent modifies this)
-program.md      — agent instructions
-pyproject.toml  — dependencies
+# 3. Fine-tune with LoRA
+uv run finetune.py
 ```
 
-## Design choices
+The agent modifies `finetune.py` -- LoRA config, learning rate, dataset mixing, training schedule.
 
-- **Single file to modify.** The agent only touches `train.py`. This keeps the scope manageable and diffs reviewable.
-- **Fixed time budget.** Training always runs for exactly 5 minutes, regardless of your specific platform. This means you can expect approx 12 experiments/hour and approx 100 experiments while you sleep. There are two upsides of this design decision. First, this makes experiments directly comparable regardless of what the agent changes (model size, batch size, architecture, etc). Second, this means that autoresearch will find the most optimal model for your platform in that time budget. The downside is that your runs (and results) become not comparable to other people running on other compute platforms.
-- **Self-contained.** No external dependencies beyond PyTorch and a few small packages. No distributed training, no complex configs. One GPU, one file, one metric.
+## Model Selection
 
-## Notable forks
+Run `python models.py` to see which pretrained models fit your machine's available memory. It lists model families (Llama, Qwen, Gemma, Mistral, etc.) with their parameter counts and memory requirements, and recommends the largest model your hardware can handle.
 
-- [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos)
+## Dataset Handling
+
+For from-scratch training, `prepare.py` downloads and tokenizes the ClimbMix dataset automatically.
+
+For fine-tuning, `models.py --prep-data <preset>` supports built-in presets (alpaca, dolly, oasst, etc.) as well as any HuggingFace dataset. Data is cached in `~/.cache/autoresearch/`.
+
+## Export to Ollama
+
+After training or fine-tuning, export your model for local inference with Ollama:
+
+```bash
+python export.py experiments/<experiment-id>/
+```
+
+This packages the weights and tokenizer into a format Ollama can serve directly.
+
+## Project Structure
+
+```
+train.py        -- from-scratch model + training loop (agent modifies this)
+finetune.py     -- LoRA fine-tuning script (agent modifies this)
+prepare.py      -- data prep + runtime utilities (do not modify)
+models.py       -- model catalog + data prep for fine-tuning (do not modify)
+export.py       -- export to Ollama format (do not modify)
+program.md      -- agent instructions (human modifies this)
+pyproject.toml  -- dependencies
+```
+
+## Running the Agent
+
+Spin up Claude Code (or any agent) in this repo, then prompt:
+
+```
+Hi, have a look at program.md and let's kick off a new experiment! Let's do the setup first.
+```
+
+The agent reads `program.md`, picks an experiment strategy, and loops autonomously -- modifying code, training, evaluating, keeping or discarding, and repeating. Each experiment takes ~5 minutes, so you get ~12 experiments per hour, or ~100 overnight.
+
+## Requirements
+
+- Apple Silicon Mac (M1/M2/M3/M4, any tier)
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) package manager
+
+```bash
+# Install uv if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Install dependencies
+uv sync
+```
+
+## Design Choices
+
+- **Single file to modify.** The agent only touches `train.py` (or `finetune.py`). This keeps the scope manageable and diffs reviewable.
+- **Fixed time budget.** Training always runs for exactly 5 minutes. This makes experiments directly comparable regardless of what the agent changes. autoresearch finds the most optimal model for your specific hardware in that budget.
+- **Native MLX.** No PyTorch, no compatibility layers. Direct Apple Silicon Metal compute via MLX's C++ runtime.
+
+## Credits
+
+- [Karpathy](https://github.com/karpathy/autoresearch) -- the original autoresearch concept and training setup
+- [miolini](https://github.com/miolini/autoresearch-macos) -- macOS fork that proved Apple Silicon viability
+- [Apple MLX team](https://github.com/ml-explore/mlx) -- the MLX framework
 
 ## License
 
