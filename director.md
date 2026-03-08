@@ -69,3 +69,13 @@ uv run director.py status                                  # Show queue status
 uv run director.py add --hypothesis "..." --category "..." --priority 1
 uv run director.py run --synthesis-interval 20 --max-experiments 5
 ```
+
+## Worker Integration
+
+Workers see the queue through `read-brief`. When a worker runs:
+```bash
+uv run commons.py read-brief
+```
+Any pending experiments from the queue appear in the "Experiment Queue" section.
+Workers can choose to implement queued experiments or pursue their own ideas.
+The queue is advisory, not mandatory.

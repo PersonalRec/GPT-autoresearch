@@ -893,3 +893,21 @@ class TestStructuredMetadata:
         cards = load_cards(knowledge_dir)
         assert cards[0]["results"]["estimated_flops"] == 1.5e9
         assert cards[0]["results"]["num_params"] == 50300000
+
+
+# ---------------------------------------------------------------------------
+# Brief with queue
+# ---------------------------------------------------------------------------
+
+
+class TestBriefWithQueue:
+    def test_brief_shows_pending_queue(self, knowledge_dir: Path):
+        from director import add_to_queue
+        add_to_queue(knowledge_dir, hypothesis="Try SwiGLU", category="architecture", priority=1)
+        brief = read_brief(knowledge_dir)
+        assert "Experiment Queue" in brief
+        assert "SwiGLU" in brief
+
+    def test_brief_no_queue_section_when_empty(self, knowledge_dir: Path):
+        brief = read_brief(knowledge_dir)
+        assert "Experiment Queue" not in brief

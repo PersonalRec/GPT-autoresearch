@@ -394,6 +394,26 @@ def read_brief(knowledge_dir: Path | str) -> str:
         for q in questions:
             parts.append(f"- {q}")
 
+    # --- Experiment queue ---
+    try:
+        from director import load_queue
+        queue = load_queue(knowledge_dir)
+        pending = [e for e in queue.get("experiments", []) if e["status"] == "pending"]
+        if pending:
+            parts.append("")
+            parts.append("## Experiment Queue")
+            for exp in sorted(pending, key=lambda e: e["priority"]):
+                parts.append(
+                    f"- [priority {exp['priority']}] ({exp['category']}) {exp['hypothesis'][:80]}"
+                )
+            parts.append("")
+            parts.append(
+                "To claim a queued experiment: "
+                "`uv run director.py status` then implement the highest-priority idea."
+            )
+    except ImportError:
+        pass  # director.py not available
+
     return "\n".join(parts)
 
 

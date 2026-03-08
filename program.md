@@ -96,6 +96,9 @@ The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autorese
 LOOP FOREVER:
 
 1. **Consult the knowledge base**: Run `uv run commons.py read-brief` and review the coverage map and recent findings. Choose an experiment that explores under-covered areas or builds on promising findings. If this is your first experiment, establish the baseline.
+
+   If the brief shows an **Experiment Queue** section, consider implementing the highest-priority queued experiment instead of choosing your own. The queue represents strategic priorities identified by the director. You can still choose your own direction if you have a strong hypothesis, but the queue helps avoid duplicated effort across agents.
+
 2. Tune `train.py` with an experimental idea by directly hacking the code.
 3. git commit
 4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
