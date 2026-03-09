@@ -72,6 +72,7 @@ If you're going to be using autoresearch on Apple Macbooks in particular, I'd re
 
 - [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos)
 - [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx)
+- [matt-langston/autoresearch](https://github.com/matt-langston/autoresearch)
 
 ## License
 
