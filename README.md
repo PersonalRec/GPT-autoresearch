@@ -50,6 +50,31 @@ Solo baseline: 1.095 BPB (355 steps, no contention). Concurrent baseline: 1.258 
 | 003 | agent0 | Warmdown 0.7 | 1.333 | +0.075 |
 | 009 | agent0 | Lower LRs all around | 1.362 | +0.104 |
 
+## Single vs Multi: Comparison
+
+| | Single-Ralph | Multi-Ralph |
+|---|---|---|
+| **GPU** | RTX 4070 Ti SUPER (16GB) | A100 SXM4 (40GB) |
+| **Agents** | 1 | 3 concurrent |
+| **Wall clock** | ~3 hours | ~1 hour |
+| **Experiments** | 32 | 20 |
+| **Experiments/hour** | ~11 | ~20 |
+| **Steps per run** | ~358 | ~140-177 (GPU contention) |
+| **Best BPB** | **1.155** | 1.180 (concurrent) |
+| **Improvement** | -3.2% from baseline | -6.2% from concurrent baseline |
+
+### Key findings
+
+**Single-ralph explores deep, multi-ralph explores wide.** In 32 sequential experiments, single-ralph built deep strategic knowledge — it discovered that shrinking the model from depth 8 to depth 5 was the single biggest lever (experiment 17: -0.012 BPB), something multi-ralph never tried because its agents focused on hyperparameters rather than architecture. Multi-ralph's strength was rapid combinatorial search: it tested 6 parameter combinations in the time single-ralph would have done 2, finding that x0_lambda + matrix_lr + RoPE 50K work together.
+
+**Agents self-organize around constraints.** The multi-ralph agents were never told about GPU contention effects. They discovered on their own that concurrent runs get fewer steps (141 vs 355), established a "concurrent baseline" for fair comparison, and stopped comparing against the solo baseline. When early experiments tried batch=64 and OOMed, agents corrected their strategy within one round.
+
+**torch.compile creates natural staggering.** Three agents starting simultaneously should OOM during compilation (each spikes to ~17GB temporarily). Instead, variable compile times cause agents to stagger naturally — by the time the third agent compiles, the first two have settled to ~13GB steady state. This wasn't designed, it emerged.
+
+**Throughput math favors multi-GPU.** With 3 agents sharing 1 GPU, each gets ~140 steps vs 355 solo. Total steps: 3×140=420 vs 355, only a 1.2× improvement. On 3 separate GPUs it would be 3×355=1065, a 3× improvement. The rotating coordinator protocol is designed for multi-GPU — single-GPU sharing is a valid but suboptimal test.
+
+**Persistent memory > parallel search for exploitation.** Single-ralph's `progress.md` accumulated 32 experiments of strategic insight. By experiment 17, the agent had built enough intuition to make a non-obvious leap (shrink the model). Multi-ralph agents share `strategy.md` but each starts with less context per round. The tradeoff: multi-ralph finds combinations faster, single-ralph finds structural insights.
+
 ## Architecture
 
 ### Single-Ralph (1 agent, 1 GPU)
