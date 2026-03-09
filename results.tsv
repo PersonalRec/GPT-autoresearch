@@ -15,3 +15,4 @@ c058164	1.753978	21.2	keep	MLP 4x->3x — val_bpb improved 1.780->1.754
 d5c7c2e	1.691225	20.2	keep	matrix_lr 0.04->0.03 — val_bpb improved 1.705->1.691
 642de54	1.688223	20.2	keep	matrix_lr 0.03->0.02 — val_bpb improved 1.691->1.688
 11a63a9	1.681958	20.2	keep	matrix_lr 0.02->0.015 — val_bpb improved 1.688->1.682
+436fbf4	1.665435	20.2	keep	scalar_lr 0.5->0.3 — val_bpb improved 1.682->1.665

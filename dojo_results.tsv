@@ -21,3 +21,4 @@ c058164	1.854936	3.608914	1.753978	adversarial_search	keep	MLP 3x — more steps
 d5c7c2e	2.003108	3.694333	1.691225	adversarial_search	keep	matrix_lr 0.03 — gap within threshold, subgroup stable
 642de54	1.984259	3.672482	1.688223	adversarial_search	keep	matrix_lr 0.02 — both val_bpb and gap improved
 11a63a9	2.058193	3.740151	1.681958	adversarial_search	keep	matrix_lr 0.015 — subgroup improved 0.48->0.45
+436fbf4	2.014228	3.679663	1.665435	adversarial_search	keep	scalar_lr 0.3 — both val_bpb and gap improved
