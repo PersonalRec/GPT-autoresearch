@@ -9,6 +9,7 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 
 import gc
+import json
 import time
 from dataclasses import dataclass, asdict
 
@@ -627,3 +628,10 @@ print(f"total_tokens_M:   {total_tokens / 1e6:.1f}")
 print(f"num_steps:        {step}")
 print(f"num_params_M:     {num_params / 1e6:.1f}")
 print(f"depth:            {DEPTH}")
+
+# Write structured results for reliable agent consumption
+with open("results.json", "w") as f:
+    json.dump({"val_bpb": val_bpb, "training_seconds": round(total_training_time, 1),
+               "total_seconds": round(t_end - t_start, 1), "peak_vram_mb": round(peak_vram_mb, 1),
+               "mfu_percent": round(steady_state_mfu, 2), "num_steps": step,
+               "num_params_M": round(num_params / 1e6, 1), "depth": DEPTH}, f)
