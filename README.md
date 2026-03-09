@@ -21,23 +21,28 @@ Best: **1.155 BPB** (from 1.193 baseline, -3.2%)
 | 25 | Depth 6→5 | 1.157 | keep | Even smaller better |
 | 32 | Window all-short S | 1.155 | keep | Faster + better quality |
 
-### Multi-Ralph on A100 SXM4 40GB (3 agents) — 15 experiments
+### Multi-Ralph on A100 SXM4 40GB (3 agents) — 20 experiments in ~1 hour
 
-Best: **1.181 BPB concurrent** (from 1.258 concurrent baseline, -6.1%)
+Best: **1.180 BPB concurrent** (from 1.258 concurrent baseline, -6.2%)
 
 Solo baseline: 1.095 BPB (355 steps, no contention). Concurrent baseline: 1.258 BPB (141 steps, 3 agents sharing GPU).
 
 | # | Agent | Experiment | val_bpb | vs concurrent |
 |---|-------|-----------|---------|---------------|
 | baseline | agent0 | Depth=8 batch=32 defaults | 1.095 | (solo) |
+| 013 | agent2 | x0_lambda + matrix_lr 0.08 + RoPE 50K | 1.180 | -0.078 |
 | 005 | agent2 | x0_lambda init 0.05 | 1.181 | -0.077 |
+| 013b | agent2 | best + warmdown 0.3 | 1.197 | -0.061 |
 | 011 | agent1 | x0_lambda + Matrix LR 0.08 | 1.201 | -0.057 |
 | 001 | agent1 | Higher Matrix LR 0.04→0.08 | 1.207 | -0.051 |
 | 008 | agent2 | Warmdown 0.3 | 1.208 | -0.050 |
+| 016 | agent0 | best + FINAL_LR_FRAC 0.1 | 1.211 | -0.047 |
 | 014 | agent1 | x0_lambda 0.05 + warmdown 0.3 | 1.212 | -0.046 |
 | 002 | agent2 | RoPE base 50K | 1.223 | -0.035 |
 | 010 | agent2 | weight_decay=0.05 + x0_lambda=0.05 | 1.240 | -0.018 |
 | 004 | agent1 | Embed LR 0.8 + Unembed 0.008 | 1.242 | -0.016 |
+| 015 | agent1 | x0_lambda + softcap 30 | 1.242 | -0.016 |
+| 017 | agent0 | adam_beta1=0.9 + x0_lambda | 1.252 | -0.006 |
 | 012 | agent0 | x0_lambda 0.05 + RoPE 50K | 1.253 | -0.005 |
 | 007 | agent1 | Concurrent baseline (no changes) | 1.258 | 0.000 |
 | exp003 | agent0 | Depth 9 / AR 57 | 1.259 | +0.001 |

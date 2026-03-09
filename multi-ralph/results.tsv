@@ -14,3 +14,8 @@ exp003	1.258704	16.2	discard	gpu0: depth=9 aspect=57 (model_dim=640, only 117 st
 010	1.239609	11.7	keep	agent2: weight_decay=0.05 on x0_lambda=0.05 base (137 steps, slight improvement over concurrent baseline)
 012	1.253045	11.7	discard	gpu0: x0_lambda=0.05 + RoPE base=50K (1.253, no improvement over x0_lambda alone)
 014	1.212238	11.7	discard	agent1: x0_lambda 0.05 + warmdown 0.3 (worse than x0_lambda alone 1.181)
+013	1.179734	11.7	keep	agent2: x0_lambda=0.05 + matrix_lr=0.08 + RoPE 50K (166 steps, NEW BEST)
+017	1.252137	11.7	discard	gpu0: adam_beta1=0.9 on x0_lambda=0.05 base (neutral, 1.252 vs 1.258 concurrent baseline)
+015	1.242447	11.7	discard	agent1: x0_lambda 0.05 + softcap 30 (worse than x0_lambda alone)
+013b	1.196577	11.7	discard	agent2: best (x0+lr+rope) + warmdown 0.3 (151 steps, worse than best 1.180)
+016	1.210936	11.7	discard	gpu0: FINAL_LR_FRAC=0.1 on best (x0+mlr0.08+rope50k), 140 steps, no improvement over best 1.180
