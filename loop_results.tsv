@@ -89,3 +89,4 @@ a4d7241	1.499524	0.000000	0.000000	skipped	20.1	discard	window SSLL->SLLL — re
 60eee01	1.508011	0.000000	0.000000	skipped	20.1	discard	logit cap 15->12 — regressed
 03213a7	1.503886	0.000000	0.000000	skipped	20.1	discard	cosine warmdown — regressed vs linear
 5ceaa6e	4.717546	0.000000	0.000000	skipped	20.1	discard	weight tying — catastrophically regressed
+03d9c1c	1.537683	0.000000	0.000000	skipped	20.1	discard	no logit cap + WD 2.0 — regressed despite more steps
