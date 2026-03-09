@@ -5,6 +5,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
+RECENT_WINDOW = 10  # Show last N experiments in detail
+
 rows = []
 with open("loop_results.tsv") as f:
     reader = csv.DictReader(f, delimiter="\t")
@@ -39,47 +41,64 @@ gap_kept_y = [robustness_gaps[i] for i in gap_kept_x]
 gap_disc_x = [i for i, s in enumerate(statuses) if s != "keep" and robustness_gaps[i] > 0]
 gap_disc_y = [robustness_gaps[i] for i in gap_disc_x]
 
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(16, 10), sharex=True, gridspec_kw={"height_ratios": [3, 2]})
-fig.suptitle(f"Closed Loop Progress: {len(rows)} Experiments, {len(kept_x)} Kept", fontsize=14, fontweight="bold")
+# Recent window range
+start_idx = max(0, len(rows) - RECENT_WINDOW)
+end_idx = len(rows) - 1
 
-# Top: val_bpb
-ax1.scatter(disc_x, disc_y, color="lightgray", s=30, zorder=2, label="Discarded")
-ax1.scatter(kept_x, kept_y, color="#2ecc71", s=60, zorder=3, label="Kept")
-ax1.plot(experiments, running_best, color="#2ecc71", linewidth=1.5, zorder=1, label="Running best")
+fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True, gridspec_kw={"height_ratios": [3, 2]})
+fig.suptitle(f"Closed Loop Progress (last {RECENT_WINDOW}): {len(rows)} total, {len(kept_x)} kept, best={running_best[-1]:.3f}", fontsize=13, fontweight="bold")
 
-# Label kept experiments (every other to reduce clutter)
-for i, (x, y, label) in enumerate(zip(kept_x, kept_y, kept_labels)):
-    if i % 2 == 0 or x == kept_x[-1]:
-        ax1.annotate(label, (x, y), textcoords="offset points", xytext=(5, 8),
-                     fontsize=6, color="gray", rotation=25)
+# Top: val_bpb (recent window)
+recent_disc_x = [x for x in disc_x if x >= start_idx]
+recent_disc_y = [val_bpbs[x] for x in recent_disc_x]
+recent_kept_x = [x for x in kept_x if x >= start_idx]
+recent_kept_y = [val_bpbs[x] for x in recent_kept_x]
+
+ax1.scatter(recent_disc_x, recent_disc_y, color="lightgray", s=40, zorder=2, label="Discarded")
+ax1.scatter(recent_kept_x, recent_kept_y, color="#2ecc71", s=80, zorder=3, label="Kept")
+ax1.plot([i for i in range(start_idx, len(rows))], running_best[start_idx:], color="#2ecc71", linewidth=2, zorder=1, label="Running best")
+
+# Label all points in recent window
+for x in range(start_idx, len(rows)):
+    desc = descriptions[x].split(" — ")[0] if " — " in descriptions[x] else descriptions[x][:30]
+    y = val_bpbs[x]
+    color = "#2ecc71" if statuses[x] == "keep" else "gray"
+    ax1.annotate(desc, (x, y), textcoords="offset points", xytext=(5, 8),
+                 fontsize=7, color=color, rotation=25)
 
 ax1.set_ylabel("Validation BPB (lower is better)", fontsize=11)
 ax1.legend(loc="upper right", fontsize=9)
 ax1.grid(True, alpha=0.3)
+ax1.set_xlim(start_idx - 0.5, end_idx + 0.5)
 
-# Bottom: robustness_gap
-ax2.scatter(gap_disc_x, gap_disc_y, color="lightcoral", s=40, zorder=2, marker="x", label="Discarded (gap tested)")
-ax2.scatter(gap_kept_x, gap_kept_y, color="#e74c3c", s=60, zorder=3, label="Kept (gap tested)")
+# Bottom: robustness_gap (recent window)
+recent_gap_kept_x = [x for x in gap_kept_x if x >= start_idx]
+recent_gap_kept_y = [robustness_gaps[x] for x in recent_gap_kept_x]
+recent_gap_disc_x = [x for x in gap_disc_x if x >= start_idx]
+recent_gap_disc_y = [robustness_gaps[x] for x in recent_gap_disc_x]
 
-# Running gap for kept
-if gap_kept_x:
-    gap_running = []
-    for x, y in zip(gap_kept_x, gap_kept_y):
-        gap_running.append(y)
-    ax2.plot(gap_kept_x, gap_running, color="#e74c3c", linewidth=1.5, zorder=1, alpha=0.7)
+if recent_gap_disc_x:
+    ax2.scatter(recent_gap_disc_x, recent_gap_disc_y, color="lightcoral", s=50, zorder=2, marker="x", label="Discarded (gap tested)")
+if recent_gap_kept_x:
+    ax2.scatter(recent_gap_kept_x, recent_gap_kept_y, color="#e74c3c", s=80, zorder=3, label="Kept (gap tested)")
+    ax2.plot(recent_gap_kept_x, recent_gap_kept_y, color="#e74c3c", linewidth=1.5, zorder=1, alpha=0.7)
+
+# Label gap-tested points
+for x in recent_gap_kept_x + recent_gap_disc_x:
+    desc = descriptions[x].split(" — ")[0] if " — " in descriptions[x] else ""
+    ax2.annotate(desc, (x, robustness_gaps[x]), textcoords="offset points", xytext=(5, 5),
+                 fontsize=7, color="red" if statuses[x] != "keep" else "#e74c3c", alpha=0.8)
 
 ax2.set_xlabel("Experiment #", fontsize=11)
 ax2.set_ylabel("Robustness Gap (adversarial)", fontsize=11)
-ax2.legend(loc="upper left", fontsize=9)
+if recent_gap_kept_x or recent_gap_disc_x:
+    ax2.legend(loc="upper left", fontsize=9)
+else:
+    ax2.text(0.5, 0.5, "No gap-tested experiments in this window", transform=ax2.transAxes,
+             ha="center", va="center", fontsize=10, color="gray", alpha=0.7)
 ax2.grid(True, alpha=0.3)
-
-# Highlight DOJO-caught discards (improved val_bpb but gap spiked)
-for i in range(len(rows)):
-    if statuses[i] != "keep" and robustness_gaps[i] > 0:
-        ax2.annotate(descriptions[i].split(" — ")[0] if " — " in descriptions[i] else "",
-                     (i, robustness_gaps[i]), textcoords="offset points", xytext=(5, 5),
-                     fontsize=6, color="red", alpha=0.7)
+ax2.set_xlim(start_idx - 0.5, end_idx + 0.5)
 
 plt.tight_layout()
 plt.savefig("progress.png", dpi=150, bbox_inches="tight")
-print("Saved progress.png")
+print(f"Saved progress.png (showing experiments {start_idx}-{end_idx})")
