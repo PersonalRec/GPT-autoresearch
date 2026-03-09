@@ -70,3 +70,22 @@ dcddbbd	1.486500	0.000000	0.000000	skipped	20.2	discard	weight_decay 1.5->1.25 �
 97c0f1f	1.533458	0.000000	0.000000	skipped	20.2	discard	adam beta2 0.9->0.85 — regressed
 bb4a0cb	1.484826	0.000000	0.000000	skipped	20.2	discard	adam beta1 0.8->0.7 — no improvement
 958a801	1.479792	2.157905	3.637697	adversarial_search	20.2	keep	final_lr_frac 0.0->0.05 — val_bpb 1.484->1.480, gap 2.083->2.158 (within threshold)
+7ff09e9	1.495650	0.000000	0.000000	skipped	20.2	discard	final_lr_frac 0.05->0.1 — regressed
+038652c	1.484641	0.000000	0.000000	skipped	20.2	discard	adam beta2 0.9->0.95 — regressed
+6114591	1.556044	0.000000	0.000000	skipped	20.2	discard	logit cap 15->20 — regressed
+dfe04dc	1.556555	0.000000	0.000000	skipped	20.2	discard	startup_exclude 1->2 — regressed
+675c9ae	1.556513	0.000000	0.000000	skipped	20.2	discard	x0_lambda 0.1->0.2 — regressed
+a4d7241	1.499524	0.000000	0.000000	skipped	20.1	discard	window SSLL->SLLL — regressed
+1056ff0	1.496957	0.000000	0.000000	skipped	20.1	discard	RoPE base 10000->20000 — regressed
+13b7252	1.489030	0.000000	0.000000	skipped	20.1	discard	embedding_lr 0.6->0.7 — regressed
+5a9eee8	1.521714	0.000000	0.000000	skipped	20.1	discard	unembedding_lr 0.004->0.005 — regressed
+234744b	1.508027	0.000000	0.000000	skipped	20.2	discard	grad clipping max_norm=1.0 — regressed
+9796033	1.484545	0.000000	0.000000	skipped	20.1	discard	sliding window 1024->512 — no improvement
+513fadc	1.539773	0.000000	0.000000	skipped	20.1	discard	z-loss 1e-4 — compute overhead
+9f2561e	1.781531	0.000000	0.000000	skipped	20.1	discard	label smoothing 0.1 — badly regressed
+1b49555	1.541915	0.000000	0.000000	skipped	20.1	discard	x0_lambda 0.1->0.05 — regressed
+11e7ad7	1.499781	0.000000	0.000000	skipped	20.1	discard	remove logit cap — regressed despite more steps
+156960d	1.494148	0.000000	0.000000	skipped	20.1	discard	adam eps 1e-10->1e-8 — regressed
+60eee01	1.508011	0.000000	0.000000	skipped	20.1	discard	logit cap 15->12 — regressed
+03213a7	1.503886	0.000000	0.000000	skipped	20.1	discard	cosine warmdown — regressed vs linear
+5ceaa6e	4.717546	0.000000	0.000000	skipped	20.1	discard	weight tying — catastrophically regressed
