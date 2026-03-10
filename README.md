@@ -68,6 +68,33 @@ pyproject.toml  — dependencies
 
 This code currently requires that you have a single NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
 
+### Running on Older NVIDIA GPUs (Turing, GTX 16 series, etc.)
+
+If you're using a GPU older than Hopper (e.g., GTX 1660 Ti, RTX 20 series), you'll need to make a few adjustments since FlashAttention-3 requires newer hardware:
+
+1. **Use SDPA instead of FlashAttention-3** — Replace `fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)` in `train.py` with:
+   ```python
+   torch.nn.functional.scaled_dot_product_attention(
+       q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2), is_causal=True
+   ).transpose(1, 2)
+   ```
+
+2. **Shrink the model for 6GB VRAM** — In `train.py`, update:
+   ```python
+   sequence_len = 512  # from 2048
+   n_layer = 4          # from 8
+   n_embd = 256         # from 384
+   DEVICE_BATCH_SIZE = 8  # from 128
+   ```
+   And comment out `model = torch.compile(model)` to avoid memory overhead.
+
+3. **Run with compatibility flags**:
+   ```bash
+   TORCH_DYNAMO_DISABLE=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run train.py
+   ```
+
+With these changes, a single 5-minute experiment runs without crashing (peak VRAM ~1.7GB, val_bpb ~1.98 on GTX 1660 Ti).
+
 Seeing as there seems to be a lot of interest in tinkering with autoresearch on much smaller compute platforms than an H100, a few extra words. If you're going to try running autoresearch on smaller computers (Macbooks etc.), I'd recommend one of the forks below. On top of this, here are some recommendations for how to tune the defaults for much smaller models for aspiring forks:
 
 1. To get half-decent results I'd use a dataset with a lot less entropy, e.g. this [TinyStories dataset](https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean). These are GPT-4 generated short stories. Because the data is a lot narrower in scope, you will see reasonable results with a lot smaller models (if you try to sample from them after training).
