@@ -479,8 +479,23 @@ class Coordinator:
         result_data: dict,
         train_py_source: str,
     ) -> bool:
-        """Update the global best if this result beats it. Returns True if updated."""
+        """
+        Update the global best if this result beats it. Returns True if updated.
+
+        Safety rules:
+        - Sanity check: reject val_bpb <= 0 or suspiciously low (< 0.5) — likely a bug
+        - Read-compare-write: re-read current best right before writing to minimize race window
+        - Previous best is always preserved in the new record for recovery
+        """
         try:
+            # Sanity: reject obviously bogus values
+            if val_bpb <= 0:
+                self._log(f"REJECTED best update: val_bpb={val_bpb} <= 0 (likely a crash/bug)")
+                return False
+            if val_bpb < 0.5:
+                self._log(f"REJECTED best update: val_bpb={val_bpb} < 0.5 (suspiciously low, likely a bug)")
+                return False
+
             # Read current best
             meta_key = f"@{HUB_ORG}/best/metadata"
             meta = self._rpc("get_memory", {"key_names": [meta_key]})
@@ -488,14 +503,33 @@ class Coordinator:
 
             previous_best_bpb = None
             previous_best_by = None
+            previous_best_description = None
             if meta_results and meta_results[0].get("status") == "success":
                 current = json.loads(meta_results[0].get("value", "{}"))
                 previous_best_bpb = current.get("val_bpb")
                 previous_best_by = current.get("agent_id")
+                previous_best_description = current.get("description")
                 if previous_best_bpb is not None and val_bpb >= previous_best_bpb:
                     return False  # not better
 
-            # Enrich metadata for the best record
+            # Sanity: improvement shouldn't be impossibly large (> 0.1 in one step)
+            if previous_best_bpb is not None:
+                improvement = previous_best_bpb - val_bpb
+                if improvement > 0.1:
+                    self._log(f"REJECTED best update: improvement of {improvement:.4f} is suspiciously large (> 0.1 in one step)")
+                    return False
+
+            # Re-read right before write to minimize race window
+            meta2 = self._rpc("get_memory", {"key_names": [meta_key]})
+            meta2_results = meta2.get("results", [])
+            if meta2_results and meta2_results[0].get("status") == "success":
+                current2 = json.loads(meta2_results[0].get("value", "{}"))
+                current2_bpb = current2.get("val_bpb")
+                if current2_bpb is not None and val_bpb >= current2_bpb:
+                    self._log(f"Lost best update race: someone posted {current2_bpb:.6f} while we were checking")
+                    return False
+
+            # Enrich metadata — always preserve previous best for recovery
             best_data = {
                 **result_data,
                 "best_val_bpb": val_bpb,
@@ -503,6 +537,7 @@ class Coordinator:
                 "achieved_at": _now_iso(),
                 "previous_best_val_bpb": previous_best_bpb,
                 "previous_best_by": previous_best_by,
+                "previous_best_description": previous_best_description,
                 "improvement_over_previous": (previous_best_bpb - val_bpb) if previous_best_bpb is not None else None,
             }
 
