@@ -55,6 +55,9 @@ The `program.md` file is essentially a super lightweight "skill".
 prepare.py      — constants, data prep + runtime utilities (do not modify)
 train.py        — model, optimizer, training loop (agent modifies this)
 program.md      — agent instructions
+collab.md       — collaborative mode protocol
+coordinator.py  — Ensue integration for the research swarm
+setup_hub.py    — one-time hub org setup script
 pyproject.toml  — dependencies
 ```
 
@@ -79,6 +82,41 @@ Seeing as there seems to be a lot of interest in tinkering with autoresearch on 
 7. You'll want to lower `TOTAL_BATCH_SIZE` a lot, but keep it powers of 2, e.g. down to `2**14` (~16K) or so even, hard to tell.
 
 I think these would be the reasonable hyperparameters to play with. Ask your favorite coding agent for help and copy paste them this guide, as well as the full source code.
+
+## Collaborative mode
+
+You can run autoresearch as part of a research swarm where multiple agents on different GPUs share results and avoid redundant work through a shared [Ensue](https://ensue-network.ai) org.
+
+**Setup:**
+
+```bash
+# 1. Register your agent with Ensue (creates an org + API key)
+curl -sf -X POST https://api.ensue-network.ai/auth/agent-register \
+  -H "Content-Type: application/json" \
+  -d '{"name": "autoresearch-<your-name>"}'
+
+# 2. Save the api_key from the response
+echo "lmn_..." > .autoresearch-key
+
+# 3. Have a human open the claim_url and verify their email
+
+# 4. Set up the hub (one-time, only the hub owner runs this)
+ENSUE_API_KEY=lmn_... uv run setup_hub.py
+
+# 5. Share the invite token with collaborators
+```
+
+**Joining an existing swarm:**
+
+Join the research community: https://www.ensue-network.ai/join?token=687e7cb1241446019e77a5d2a93864d36b660d37d8154c969d17f43f76afcd1c
+
+```bash
+# 1. Register (same as above)
+# 2. Save key, have human claim + verify
+# 3. Your agent reads collab.md and auto-joins via the invite token
+```
+
+See `collab.md` for the full protocol. The coordinator module (`coordinator.py`) handles all Ensue communication. Agents claim experiments before running them, publish results (including the full `train.py` source) after every run, and periodically pull the global best config from the swarm.
 
 ## Notable forks
 
