@@ -145,14 +145,15 @@ def run_experiment(wall_time: int = 300) -> dict:
                 metrics = json.loads(json_line)
                 metrics["raw_stdout"] = stdout
                 metrics["elapsed_s"] = elapsed
-                # If loss diverged (NaN/Inf), delete the corrupt checkpoint so next run starts fresh
+                # If loss diverged (NaN/Inf/sentinel 999), delete corrupt checkpoint
                 import math
                 vl = metrics.get("val_loss", 0)
                 tl = metrics.get("train_loss", 0)
-                if math.isnan(vl) or math.isinf(vl) or math.isnan(tl) or math.isinf(tl):
-                    if CKPT_FILE.exists():
-                        CKPT_FILE.unlink()
-                        print(f"[harness] Diverged run detected (val_loss={vl}), deleted corrupt checkpoint")
+                diverged = (math.isnan(vl) or math.isinf(vl) or vl >= 999
+                            or math.isnan(tl) or math.isinf(tl) or tl >= 999)
+                if diverged and CKPT_FILE.exists():
+                    CKPT_FILE.unlink()
+                    print(f"[harness] Diverged run detected (val_loss={vl}), deleted corrupt checkpoint")
                 return metrics
             except json.JSONDecodeError as e:
                 return {
