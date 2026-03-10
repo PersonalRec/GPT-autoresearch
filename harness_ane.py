@@ -114,6 +114,7 @@ def run_experiment(wall_time: int = 300) -> dict:
         cmd = [
             str(BINARY),
             "--resume",
+            "--reset-timing",
             "--ckpt", str(CKPT_FILE),
             "--wall-time", str(wall_time),
             "--data", str(DATA_FILE),

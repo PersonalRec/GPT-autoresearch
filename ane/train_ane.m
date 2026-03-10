@@ -184,11 +184,13 @@ int main(int argc, char *argv[]) {
         const char *data_path = DATA_PATH_DEFAULT;
         bool do_resume = false;
         bool fresh = false;
+        bool reset_timing = false;
         int wall_time_budget = 300;  // default 5 min
         int pos = 0;
         for (int i=1; i<argc; i++) {
             if (strcmp(argv[i], "--resume") == 0) do_resume = true;
             else if (strcmp(argv[i], "--fresh") == 0) fresh = true;
+            else if (strcmp(argv[i], "--reset-timing") == 0) reset_timing = true;
             else if (strcmp(argv[i], "--wall-time") == 0 && i+1<argc) wall_time_budget = atoi(argv[++i]);
             else if (strcmp(argv[i], "--steps") == 0 && i+1<argc) total_steps = atoi(argv[++i]);
             else if (strcmp(argv[i], "--lr") == 0 && i+1<argc) lr = atof(argv[++i]);
@@ -235,7 +237,17 @@ int main(int argc, char *argv[]) {
             resuming = load_checkpoint(ckpt_path, &start_step, &total_steps, &lr, &resume_loss,
                 &cum_compile, &cum_train, &cum_wall, &cum_steps, &cum_batches, &adam_t,
                 lw, la, rms_final, &arms_final, embed, &aembed);
-            if (resuming) printf("[RESUMED step %d, loss=%.4f]\n", start_step, resume_loss);
+            if (resuming) {
+                if (reset_timing) {
+                    // New experiment from harness: keep weights+adam, reset timing
+                    cum_wall = 0; cum_compile = 0; cum_train = 0;
+                    cum_steps = 0; cum_batches = 0;
+                    start_step = 0;
+                    printf("[RESUMED weights (adam_t=%d), reset timing for new experiment]\n", adam_t);
+                } else {
+                    printf("[RESUMED step %d, loss=%.4f]\n", start_step, resume_loss);
+                }
+            }
         }
         if (!resuming) {
             printf("=== ANE Training ===\n");
