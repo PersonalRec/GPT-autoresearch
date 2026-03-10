@@ -61,6 +61,23 @@ If you want to run this with OpenCode, use this flow:
 
 The agent will use `workflows/run_experiment.py` and kick off the run.
 
+### Why this workflow is better
+
+In **this fork** (`buzypi/autoresearch`), autonomous runs are executed through a dedicated workflow script (`workflows/run_experiment.py`) and an explicit agent runbook (`AGENTS.md`).
+
+That is different from the older "just follow `program.md` directly" execution style, where each agent session had to repeatedly infer process details from prose instructions.
+
+Benefits:
+
+- **Operational consistency vs prose-only execution.** Instead of relying on session-by-session interpretation of `program.md`, one script now encodes setup, baseline, loop control, and resume behavior.
+- **Natural-language intent still works.** `AGENTS.md` maps prompts like "run another 5 iterations" to deterministic commands, so agents stay aligned.
+- **Reliable continuation.** Runs persist state under `workflows/runs/<run_id>/`, so partial iterations can resume from the next pending stage.
+- **Controlled execution surface.** You can target only selected top-level stages or loop sub-stages while keeping the same run state.
+- **Long-run friendly.** Training can run in background, and later `resume` invocations poll/continue in-flight work.
+- **Clear audit trail.** `runner.log`, `history.jsonl`, `state.json`, and per-iteration artifacts make each decision traceable.
+
+`program.md` is still the research policy and objective layer (what to optimize, constraints, judgment criteria). In this fork, `workflows/run_experiment.py` + `AGENTS.md` provide the execution layer (how runs are actually carried out repeatably).
+
 ## Project structure
 
 ```
