@@ -1,146 +1,213 @@
-# autoresearch
+# Test Time RL Discover + Auto Research
 
 ![teaser](progress.png)
 
-*One day, frontier AI research used to be done by meat computers in between eating, sleeping, having other fun, and synchronizing once in a while using sound wave interconnect in the ritual of "group meeting". That era is long gone. Research is now entirely the domain of autonomous swarms of AI agents running across compute cluster megastructures in the skies. The agents claim that we are now in the 10,205th generation of the code base, in any case no one could tell if that's right or wrong as the "code" is now a self-modifying binary that has grown beyond human comprehension. This repo is the story of how it all began. -@karpathy, March 2026*.
+This repo is a focused fork of [karpathy/autoresearch](https://github.com/karpathy/autoresearch) that replaces the ad hoc outer experimentation loop with [TTT-Discover](https://github.com/test-time-training/discover).
 
-The idea: give an AI agent a small but real LLM training setup and let it experiment autonomously overnight. It modifies the code, trains for 5 minutes, checks if the result improved, keeps or discards, and repeats. You wake up in the morning to a log of experiments and (hopefully) a better model. The training code here is a simplified single-GPU implementation of [nanochat](https://github.com/karpathy/nanochat). The core idea is that you're not touching any of the Python files like you normally would as a researcher. Instead, you are programming the `program.md` Markdown files that provide context to the AI agents and set up your autonomous research org. The default `program.md` in this repo is intentionally kept as a bare bones baseline, though it's obvious how one would iterate on it over time to find the "research org code" that achieves the fastest research progress, how you'd add more agents to the mix, etc. A bit more context on this project is here in this [tweet](https://x.com/karpathy/status/2029701092347630069).
+The core idea is:
 
-## How it works
+- The **inner loop** is still `autoresearch`: edit `train.py`, run a fixed-budget training job, measure `val_bpb`.
+- The **outer loop** is now **test-time RL** from TTT-Discover.
+- The outer model proposes full replacements for `train.py`.
+- The resulting inner-loop metric improvement becomes the reward used to update the outer model online.
 
-The repo is deliberately kept small and only really has a three files that matter:
+This keeps the original spirit of autoresearch, but makes the search policy itself train during the run.
 
-- **`prepare.py`** — fixed constants, one-time data prep (downloads training data, trains a BPE tokenizer), and runtime utilities (dataloader, evaluation). Not modified.
-- **`train.py`** — the single file the agent edits. Contains the full GPT model, optimizer (Muon + AdamW), and training loop. Everything is fair game: architecture, hyperparameters, optimizer, batch size, etc. **This file is edited and iterated on by the agent**.
-- **`program.md`** — baseline instructions for one agent. Point your agent here and let it go. **This file is edited and iterated on by the human**.
+## Credits
 
-By design, training runs for a **fixed 5-minute time budget** (wall clock, excluding startup/compilation), regardless of the details of your compute. The metric is **val_bpb** (validation bits per byte) — lower is better, and vocab-size-independent so architectural changes are fairly compared.
+This project is derived from:
 
-## Quick start
+- [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
+- [Learning to Discover at Test Time](https://arxiv.org/abs/2601.16175)
+- [test-time-training/discover](https://github.com/test-time-training/discover)
 
-**Requirements:** A single NVIDIA GPU (tested on H100), Python 3.11+, [uv](https://docs.astral.sh/uv/).
+The RL optimization recipe is intended to stay with upstream `discover`; this repo mainly provides the autoresearch-specific environment, reward, runner, and usage wrapper.
+
+## What This Repo Does
+
+The repo has two layers:
+
+1. **Inner optimization target**
+   - `prepare.py` downloads data and trains the tokenizer.
+   - `train.py` is the only file the outer model edits.
+   - `val_bpb` is the optimization metric. Lower is better.
+
+2. **Outer TTT-Discover loop**
+   - `run_ttt_discover.py` launches the test-time RL run.
+   - `ttt_autoresearch/` adapts autoresearch to the `discover` environment interface.
+   - Each candidate `train.py` is executed in an isolated workspace.
+   - Reward is computed from `current_best_val_bpb - candidate_val_bpb`.
+
+## Repository Layout
+
+```text
+prepare.py                  Fixed data prep and runtime utilities
+train.py                    Inner training program edited by the outer model
+program.md                  Human-authored research instructions/context
+run_ttt_discover.py         Main TTT-Discover entrypoint
+ttt_autoresearch/           Adapter layer for environment, reward, runner, config
+configs/                    Ready-to-run YAML config
+tests/                      Smoke and unit coverage for the adapter
+```
+
+## How The RL Loop Works
+
+At each outer-loop step:
+
+1. TTT-Discover samples a group of candidate `train.py` replacements.
+2. Each candidate is evaluated by running a real autoresearch training job.
+3. The resulting `val_bpb` is parsed from the run logs.
+4. Reward is computed from improvement over the current best state.
+5. Upstream `discover` performs the online RL update.
+6. If a candidate improves `val_bpb`, it becomes the new best `train.py`.
+
+Important details:
+
+- The **action** is the full replacement contents of `train.py`.
+- The **reward** is the inner-loop metric outcome, not the patch text.
+- The implementation keeps grouped rollouts for the upstream entropic advantage recipe.
+- Inner evaluations are serialized by default with `max_concurrent_evaluations: 1` so multiple full training jobs do not fight over the same GPU.
+
+## Quick Start
+
+**Requirements**
+
+- Linux
+- A single NVIDIA GPU
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/)
+
+Install and prepare the base autoresearch environment:
 
 ```bash
-
-# 1. Install uv project manager (if you don't already have it)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 2. Install dependencies
+# 1. Install dependencies
 uv sync
 
-# 3. Download data and train tokenizer (one-time, ~2 min)
+# 2. Download data and train the tokenizer
 uv run prepare.py
 
-# 4. Manually run a single training experiment (~5 min)
+# 3. Sanity check the original inner loop
 uv run train.py
 ```
 
-If the above commands all work ok, your setup is working and you can go into autonomous research mode.
-
-## Running the agent
-
-Simply spin up your Claude/Codex or whatever you want in this repo (and disable all permissions), then you can prompt something like:
-
-```
-Hi have a look at program.md and let's kick off a new experiment! let's do the setup first.
-```
-
-The `program.md` file is essentially a super lightweight "skill".
-
-## TTT-Discover mode
-
-This repo also includes a thin adapter that uses [TTT-Discover](https://github.com/test-time-training/discover) as the outer RL engine for `autoresearch`.
-
-This integration is inspired by and credits the TTT-Discover paper, [Learning to Discover at Test Time](https://arxiv.org/abs/2601.16175), and the upstream [test-time-training/discover](https://github.com/test-time-training/discover) repository.
-
-Because upstream `ttt-discover` depends on Python 3.11+, the integrated repo now targets Python 3.11+ for both the original and TTT workflows.
-
-- The outer model proposes full replacements for `train.py`.
-- Each candidate `train.py` is executed in an isolated workspace.
-- The inner run's `val_bpb` becomes the reward signal for the outer model.
-- The implementation keeps the `discover` RL recipe intact: online LoRA updates, grouped rollouts, KL control, and state reuse through the upstream sampler.
-
-### Quickstart
+Then launch the outer TTT-Discover loop:
 
 ```bash
-# 1. Install dependencies, including the pinned ttt-discover dependency
-uv sync
-
-# 2. Prepare data and tokenizer once
-uv run prepare.py
-
-# 3. Launch TTT-Discover outer-loop RL
 uv run python run_ttt_discover.py --config configs/ttt_discover_autoresearch.yaml
 ```
 
-The default outer model target is `Qwen/Qwen3.5-35B-A3B`. To swap models, edit one field in [`configs/ttt_discover_autoresearch.yaml`](configs/ttt_discover_autoresearch.yaml):
+## Default Configuration
+
+The default config lives at [configs/ttt_discover_autoresearch.yaml](configs/ttt_discover_autoresearch.yaml).
+
+Current defaults:
+
+- `model_name: Qwen/Qwen3.5-35B-A3B`
+- `samples_per_step: 8`
+- `max_steps: 8`
+- `temperature: 1.0`
+- `max_concurrent_evaluations: 1`
+
+That means the RL loop samples grouped candidates for the upstream TTT recipe, but only one full inner autoresearch training run executes at a time on the local machine.
+
+## Model and Renderer Configuration
+
+The model is configurable, but the prompt/response format must match a supported renderer.
+
+Known-good renderer values:
+
+- `qwen3`
+- `qwen3_instruct`
+- `gpt_oss_no_sysprompt`
+- `gpt_oss_low_reasoning`
+- `gpt_oss_medium_reasoning`
+- `gpt_oss_high_reasoning`
+
+Examples:
 
 ```yaml
 model_name: Qwen/Qwen3.5-35B-A3B
+renderer_name: qwen3
 ```
-
-For example:
 
 ```yaml
 model_name: openai/gpt-oss-120b
+renderer_name: gpt_oss_high_reasoning
 ```
 
-Outputs are written under `runs/<timestamp>/`:
+If you use an unknown model family, you should set `renderer_name` explicitly. The config now fails fast if it cannot infer a compatible renderer.
 
-- `baseline.json` for the original `train.py`
-- `history.jsonl` for every accepted and rejected candidate
-- `best/train.py` for the best discovered replacement
-- `best/metrics.json` for the best run metadata
-- `candidates/` for per-candidate isolated workspaces and logs
+## Output Artifacts
 
-### Config notes
+Each run writes artifacts under `runs/<timestamp>/`:
 
-- `model_name` is configurable, but the prompt/response format still needs a compatible `renderer_name`.
-- Known-good renderer names are `qwen3`, `qwen3_instruct`, `gpt_oss_no_sysprompt`, `gpt_oss_low_reasoning`, `gpt_oss_medium_reasoning`, and `gpt_oss_high_reasoning`.
-- For unknown model families, set both `model_name` and `renderer_name` explicitly or startup will fail fast.
-- `provider` and `api_base` can be set in the YAML or overridden on the CLI.
-- `baseline_command_override` and `candidate_command_override` let you swap the execution command without changing code.
-- `max_concurrent_evaluations` defaults to `1` so grouped rollouts do not launch multiple full `train.py` jobs onto the same GPU at once.
-- `run_ttt_discover.py` uses the upstream `discover` trainer stack directly, but bypasses the public `discover()` model-name guard so non-GPT-OSS models such as Qwen can be used without changing the RL optimization recipe.
+- `baseline.json`
+  - baseline execution metadata for the original `train.py`
+- `resolved_config.json`
+  - the fully resolved runtime config
+- `history.jsonl`
+  - one line per evaluated candidate
+- `best/train.py`
+  - the current best discovered inner-loop program
+- `best/metrics.json`
+  - the best run metadata and metric
+- `candidates/`
+  - isolated workspaces with stdout/stderr and per-candidate files
+- `discover_log/`
+  - upstream sampler/checkpoint/log state from `ttt-discover`
 
-## Project structure
+## Inner Loop Assumptions
 
+This repo intentionally keeps the inner autoresearch setup small:
+
+- `prepare.py` remains fixed.
+- `train.py` is the only file the outer model edits.
+- Training still uses the original fixed wall-clock budget from autoresearch.
+- `val_bpb` remains the optimization target because it is stable across vocabulary and architecture changes.
+
+## Design Choices
+
+### Why only `train.py`?
+
+Because that matches the original autoresearch framing and keeps the action space bounded. It also makes it easier to attribute reward to specific inner-loop changes.
+
+### Why grouped rollouts?
+
+Because upstream `discover` uses grouped rollouts for its entropic advantage estimation and reuse behavior. This repo keeps that outer-loop recipe.
+
+### Why serialize inner evaluations?
+
+Because unlike some upstream `discover` tasks, each rollout here is an actual GPU training job. Running several `train.py` jobs concurrently on one GPU would distort the reward surface and often fail operationally.
+
+## Plain AutoResearch Mode Still Works
+
+This fork does not remove the original autoresearch workflow. You can still use it directly:
+
+```bash
+uv run prepare.py
+uv run train.py
 ```
-prepare.py      — constants, data prep + runtime utilities (do not modify)
-train.py        — model, optimizer, training loop (agent modifies this)
-program.md      — agent instructions
-pyproject.toml  — dependencies
-run_ttt_discover.py — TTT-Discover entrypoint for outer-loop RL
-ttt_autoresearch/   — thin autoresearch environment/reward adapter for discover
-```
 
-## Design choices
+The TTT-Discover path is an additional outer loop, not a replacement for the inner codebase.
 
-- **Single file to modify.** The agent only touches `train.py`. This keeps the scope manageable and diffs reviewable.
-- **Fixed time budget.** Training always runs for exactly 5 minutes, regardless of your specific platform. This means you can expect approx 12 experiments/hour and approx 100 experiments while you sleep. There are two upsides of this design decision. First, this makes experiments directly comparable regardless of what the agent changes (model size, batch size, architecture, etc). Second, this means that autoresearch will find the most optimal model for your platform in that time budget. The downside is that your runs (and results) become not comparable to other people running on other compute platforms.
-- **Self-contained.** No external dependencies beyond PyTorch and a few small packages. No distributed training, no complex configs. One GPU, one file, one metric.
+## Current Readiness
 
-## Platform support
+What is tested locally:
 
-This code currently requires that you have a single NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
+- config loading and override behavior
+- reward mapping
+- candidate parsing
+- environment prompt and state flow
+- CLI wiring into upstream `discover`
+- serialization of inner evaluations
 
-Seeing as there seems to be a lot of interest in tinkering with autoresearch on much smaller compute platforms than an H100, a few extra words. If you're going to try running autoresearch on smaller computers (Macbooks etc.), I'd recommend one of the forks below. On top of this, here are some recommendations for how to tune the defaults for much smaller models for aspiring forks:
+What is still environment-dependent:
 
-1. To get half-decent results I'd use a dataset with a lot less entropy, e.g. this [TinyStories dataset](https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean). These are GPT-4 generated short stories. Because the data is a lot narrower in scope, you will see reasonable results with a lot smaller models (if you try to sample from them after training).
-2. You might experiment with decreasing `vocab_size`, e.g. from 8192 down to 4096, 2048, 1024, or even - simply byte-level tokenizer with 256 possibly bytes after utf-8 encoding.
-3. In `prepare.py`, you'll want to lower `MAX_SEQ_LEN` a lot, depending on the computer even down to 256 etc. As you lower `MAX_SEQ_LEN`, you may want to experiment with increasing `DEVICE_BATCH_SIZE` in `train.py` slightly to compensate. The number of tokens per fwd/bwd pass is the product of these two.
-4. Also in `prepare.py`, you'll want to decrease `EVAL_TOKENS` so that your validation loss is evaluated on a lot less data.
-5. In `train.py`, the primary single knob that controls model complexity is the `DEPTH` (default 8, here). A lot of variables are just functions of this, so e.g. lower it down to e.g. 4.
-6. You'll want to most likely use `WINDOW_PATTERN` of just "L", because "SSSL" uses alternating banded attention pattern that may be very inefficient for you. Try it.
-7. You'll want to lower `TOTAL_BATCH_SIZE` a lot, but keep it powers of 2, e.g. down to `2**14` (~16K) or so even, hard to tell.
+- a true end-to-end production run on the target Linux/CUDA machine
+- provider-specific model serving details
+- real-world throughput and stability under long TTT sessions
 
-I think these would be the reasonable hyperparameters to play with. Ask your favorite coding agent for help and copy paste them this guide, as well as the full source code.
-
-## Notable forks
-
-- [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos) (MacOS)
-- [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) (MacOS)
-- [jsegov/autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx) (Windows)
+So the repo is structurally ready for the intended setup, but final operational confidence still comes from a real GPU run on the target hardware.
 
 ## License
 
