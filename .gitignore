@@ -1,6 +1,7 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+.pytest_cache/
 build/
 dist/
 wheels/
@@ -21,3 +22,10 @@ dev/
 
 # Results file
 results.tsv
+
+# Component-system runtime artifacts (logs, queue, state, worktrees under history/)
+component_system/history/
+component_system/baseline_branches.json
+component_system/baseline_metrics.json
+*.log
+.ipynb_checkpoints/

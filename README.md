@@ -47,6 +47,42 @@ Hi have a look at program.md and let's kick off a new experiment! let's do the s
 
 The `program.md` file is essentially a super lightweight "skill".
 
+### Component-system workflow
+
+The component system runs a continuous **Seed → P → DCA** loop. A resident daemon manages two workers (P and DCA) that poll a file-based queue and dispatch each stage to an external code agent (Claude Code, Codex, or OpenCode).
+
+**1. Start the web dashboard** (optional, but recommended for monitoring):
+
+```bash
+uv run uvicorn component_system.web.app:app --reload
+```
+
+Open http://127.0.0.1:8000 — the dashboard lives at `/component-system`. Use `--host 0.0.0.0` or `--port 8080` as needed.
+
+**2. Start the daemon:**
+
+```bash
+# Default: uses Claude Code
+uv run component_system/run.py
+
+# Or choose a different agent backend
+PDCA_AGENT=codex    uv run component_system/run.py
+PDCA_AGENT=opencode uv run component_system/run.py
+```
+
+**3. Bootstrap via a coding agent.** Do *not* tell the agent to execute PDCA stages manually. Instead, give it a prompt like:
+
+```text
+Understand this project and follow component_system/protocol.md.
+Do not execute PDCA stages manually in this session.
+Instead, bootstrap the component system by creating an initial seed
+and queuing it to component_system/queue/p/, then confirm the daemon
+(uv run component_system/run.py) is running so the P and DCA workers
+can process stages automatically.
+```
+
+Once bootstrapped, seeds flow through `queue/p/` → P worker → `queue/dca/` → DCA worker → `state/` automatically. Results and promotions are tracked in `state/` and visible in the web dashboard.
+
 ## Project structure
 
 ```
