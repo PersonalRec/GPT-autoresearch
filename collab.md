@@ -59,20 +59,34 @@ If you suspect the global best has been corrupted, the previous best info is alw
 
 Same as `program.md`, plus three hooks:
 
-**THINK** (before picking an experiment — the research group discussion):
+**THINK** (before picking an experiment):
 
-The THINK phase is where you tap into the collective intelligence of the swarm. Don't just check what's been tried — *analyze*, *question*, and *learn* from the group:
+You are a researcher in a group. The THINK phase is where you read the shared lab notebook, reason about what you see, and decide what to try next. Small iterative tweaks are fine — being meticulous is a virtue. But be thoughtful: know *why* you're running each experiment, and don't waste a run on something the swarm already answered.
 
-1. `coord.analyze_swarm()` — read the room. What's the state of play? Who's working on what? Are we improving or plateauing?
-2. `coord.ask_swarm("what happens with high LR?", namespace="results")` — ask targeted questions scoped to the right namespace.
-3. `coord.ask_swarm("any insights on optimizer choice?", namespace="insights")` — check collective learnings.
-4. `coord.list_namespace("results")` — browse the tree to see what's been tried. The human-readable keys make this immediately scannable.
-5. `coord.get_swarm_insights("learning rate")` — search for specific insights by topic.
-6. `coord.get_unclaimed_hypotheses()` — grab ideas from others.
-7. Every 5 runs, `coord.pull_best_config()`. Adopt if someone beat you.
-8. `coord.search_experiments("your idea")` — skip if already tried and failed.
+**Read the room:**
+- `coord.analyze_swarm()` — start here. Who's active, what's the best, what's been tried, are we improving or stuck?
+- `coord.list_namespace("results")` — scan what exists. The keys are human-readable.
+- `coord.get_swarm_insights("topic")` — read what the group has learned before planning your next move.
+- `coord.ask_swarm("what batch sizes have been tried?", namespace="results")` — interrogate the collective knowledge on specific topics.
+- `coord.get_unclaimed_hypotheses()` — check if someone proposed something based on their findings. Picking up a well-reasoned hypothesis from another agent is often the highest-value move.
 
-Based on all of the above, form a hypothesis and claim it. After the experiment, share what you learned: `coord.post_insight("LR above 0.08 causes instability — tried it, regressed", evidence_keys=["results/..."])`.
+**Reason about it:**
+Don't just read — *think*. What patterns do you see across results? What's the biggest unknown? Are there insights from different agents that combine into something new? If one agent showed smaller batches help and another showed a certain LR is neutral, maybe smaller batch *with* adjusted LR is worth trying. Connect the dots.
+
+**Propose ideas you won't run yourself:**
+If your analysis reveals promising directions you won't pursue right now, publish them for others:
+```python
+coord.publish_hypothesis(
+    title="cosine schedule with small batch",
+    hypothesis="More steps help per earlier results. Cosine might extract more from those extra steps.",
+    suggested_config={"SCHEDULE": "cosine", "BATCH_SIZE": 2**18},
+    evidence_keys=["results/..."],
+    priority=4,
+)
+```
+The swarm gets smarter when agents share their reasoning, not just their results. Every hypothesis you publish is a gift to the group — someone else can run with it while you explore a different direction.
+
+Every 5 runs, `coord.pull_best_config()`. Adopt if someone beat you.
 
 **CLAIM** (before editing train.py):
 - `exp_key = coord.claim_experiment("description")`.
@@ -85,7 +99,8 @@ Based on all of the above, form a hypothesis and claim it. After the experiment,
 - Results include `delta_vs_best` — how this result compares to the global best at publish time.
 - Auto-updates global best if you beat it.
 - Publish failures too — others learn from them.
-- Post insights after experiments: `coord.post_insight("what I learned", evidence_keys=[...])`.
+- **Always post an insight** after each experiment — what did you learn? Not just "it worked" or "it didn't", but *why* you think it did or didn't. Example: `coord.post_insight("halving batch doubled steps and improved bpb — step count seems to matter more than batch size at this scale", evidence_keys=["results/..."])`.
+- **Propose follow-up hypotheses** if your result suggests a next step you won't try immediately. If you found something interesting, share the thread so others can pull on it.
 
 ## Claiming protocol
 
