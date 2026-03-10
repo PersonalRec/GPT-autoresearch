@@ -49,6 +49,18 @@ Hi have a look at program.md and let's kick off a new experiment! let's do the s
 
 The `program.md` file is essentially a super lightweight "skill".
 
+### OpenCode quickstart
+
+If you want to run this with OpenCode, use this flow:
+
+1. Clone the repo.
+2. Install OpenCode.
+3. `cd` into the repo.
+4. Run `opencode`.
+5. Type: `Run the experiment for 1 loop`.
+
+The agent will use `workflows/run_experiment.py` and kick off the run.
+
 ## Project structure
 
 ```
