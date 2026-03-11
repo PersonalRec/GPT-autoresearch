@@ -234,15 +234,6 @@ class AutoResearchRunner:
                 },
             )
 
-        undefined_name = _find_top_level_undefined_name(module)
-        if undefined_name is not None:
-            return PreflightResult(
-                ok=False,
-                stage="top_level_names",
-                reason=f"Top-level code references undefined name {undefined_name!r}.",
-                details={"name": undefined_name},
-            )
-
         if not VAL_BPB_PRINT_RE.search(source):
             return PreflightResult(
                 ok=False,

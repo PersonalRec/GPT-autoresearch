@@ -134,6 +134,39 @@ class RunnerTests(unittest.TestCase):
         )
         self.assertEqual(_find_top_level_undefined_name(module), "x")
 
+    def test_preflight_allows_runtime_names_defined_in_top_level_loop(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "program.md").write_text("program", encoding="utf-8")
+            (root / "prepare.py").write_text("TIME_BUDGET = 1\nMAX_SEQ_LEN = 2048\n", encoding="utf-8")
+            source = (
+                "from prepare import MAX_SEQ_LEN, TIME_BUDGET\n"
+                "TOTAL_BATCH_SIZE = 4096\n"
+                "DEVICE_BATCH_SIZE = 2\n"
+                "tokens_per_fwdbwd = DEVICE_BATCH_SIZE * MAX_SEQ_LEN\n"
+                "assert TOTAL_BATCH_SIZE % tokens_per_fwdbwd == 0\n"
+                "progress = 0.5\n"
+                "while True:\n"
+                "    pct_done = 100 * progress\n"
+                "    print(pct_done)\n"
+                "    break\n"
+                "class GPT:\n"
+                "    def forward(self, idx, targets=None, reduction='mean'):\n"
+                "        return 0\n"
+                "print(f\"val_bpb:          {1.0:.6f}\")\n"
+            )
+            (root / "train.py").write_text(source, encoding="utf-8")
+            config = TTTAutoResearchConfig(execution_backend="local").normalized(root)
+            runner = AutoResearchRunner(root, config, Path(config.run_dir))
+            candidate = parse_patch_candidate_for_state(
+                "<<<<<<< SEARCH\nprint(pct_done)\n=======\nprint(f'progress={pct_done}')\n>>>>>>> REPLACE",
+                source,
+            )
+            workspace = runner.prepare_candidate_workspace(candidate, step=0)
+            preflight = runner.preflight_candidate(workspace, candidate)
+            self.assertTrue(preflight.ok)
+            self.assertEqual(preflight.stage, "ok")
+
     def test_preflight_rejects_missing_val_bpb_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
