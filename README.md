@@ -56,6 +56,69 @@ prepare.py      — constants, data prep + runtime utilities (do not modify)
 train.py        — model, optimizer, training loop (agent modifies this)
 program.md      — agent instructions
 pyproject.toml  — dependencies
+
+# SFT fine-tuning (separate workflow)
+sft_prepare.py  — one-time setup: downloads Kumru-2B tokenizer + math dataset
+sft_train.py    — SFT training loop for vngrs-ai/Kumru-2B-Base
+```
+
+---
+
+## SFT Fine-Tuning: Kumru-2B on Turkish Math
+
+This repo also includes a Supervised Fine-Tuning (SFT) workflow that fine-tunes
+[vngrs-ai/Kumru-2B-Base](https://huggingface.co/vngrs-ai/Kumru-2B-Base) on the
+[oztrkoguz/Open_Math_Instruct_Turkish](https://huggingface.co/datasets/oztrkoguz/Open_Math_Instruct_Turkish)
+dataset (~4.5K Turkish math question-answer pairs).
+
+### Quick start (SFT)
+
+```bash
+# 1. Install dependencies (includes transformers, datasets, peft)
+uv sync
+
+# 2. Download model + dataset, run sanity checks (one-time)
+uv run sft_prepare.py
+
+# 3. Run SFT training (5-minute time budget, same as pretraining)
+uv run sft_train.py
+```
+
+### Key hyperparameters (`sft_train.py`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `MAX_SEQ_LEN` | `512` | Sequence length (raise to 1024+ if VRAM allows) |
+| `DEVICE_BATCH_SIZE` | `4` | Micro-batch size per step (lower if OOM) |
+| `TOTAL_BATCH_SIZE` | `16` | Effective batch size via gradient accumulation |
+| `LR` | `2e-5` | Peak learning rate |
+| `USE_LORA` | `False` | Enable LoRA for low-VRAM training |
+| `LORA_RANK` | `16` | LoRA rank (higher = more capacity, more VRAM) |
+| `MASK_PROMPT` | `True` | Only compute loss on assistant's answer tokens |
+
+### VRAM guidance
+
+| GPU VRAM | Recommended settings |
+|---|---|
+| ≥ 24 GB | Defaults work fine, can raise `MAX_SEQ_LEN=1024` |
+| 12–24 GB | Set `USE_LORA=True`, keep defaults |
+| 8–12 GB | Set `USE_LORA=True`, lower `MAX_SEQ_LEN=256` |
+| < 8 GB | Set `USE_LORA=True`, `MAX_SEQ_LEN=256`, `DEVICE_BATCH_SIZE=1` |
+
+### Output format
+
+The training script prints the same `---` summary block at the end:
+
+```
+---
+val_loss:         1.234567
+val_ppl:          3.4350
+training_seconds: 300.0
+peak_vram_mb:     8192.0
+num_steps:        312
+model:            vngrs-ai/Kumru-2B-Base
+dataset:          oztrkoguz/Open_Math_Instruct_Turkish
+...
 ```
 
 ## Design choices

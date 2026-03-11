@@ -1,10 +1,11 @@
 [project]
 name = "autoresearch"
 version = "0.1.0"
-description = "Autonomous pretraining research swarm"
+description = "Autonomous pretraining research swarm + SFT fine-tuning"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    # Original pretraining dependencies
     "kernels>=0.11.7",
     "matplotlib>=3.10.8",
     "numpy>=2.2.6",
@@ -14,6 +15,13 @@ dependencies = [
     "rustbpe>=0.1.0",
     "tiktoken>=0.11.0",
     "torch==2.9.1",
+    # SFT dependencies
+    "transformers>=4.47.0",
+    "datasets>=3.0.0",
+    "accelerate>=1.0.0",
+    "huggingface-hub>=0.27.0",
+    "peft>=0.14.0",
+    "safetensors>=0.4.0",
 ]
 
 [tool.uv.sources]
