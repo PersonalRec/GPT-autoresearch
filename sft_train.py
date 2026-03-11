@@ -675,8 +675,8 @@ for round_idx in range(1, MAX_ROUNDS + 1):
         torch.cuda.empty_cache()
         gc.collect()
     except KeyboardInterrupt:
-        print("\nDurduruldu.")
-        break
+        print("\nDurduruldu — mevcut en iyi HP ile final eğitime geçiliyor...")
+        break  # döngüden çık, aşağıdaki final eğitim bloğu çalışır
     except Exception as e:
         print(f"\n  Hata: {e}")
         val_loss, num_steps, peak_vram, train_sec = float("inf"), 0, 0.0, 0.0
@@ -743,21 +743,29 @@ print('=' * 60)
 # Seçenek A: En iyi HP ile uzun süreli final eğitim
 # ---------------------------------------------------------------------------
 
-# Dataset'i en iyi HP'nin seq_len'ine göre yeniden oluştur
-if best_hp.max_seq_len != train_dataset.data[0][0].size(0) if train_dataset.data else True:
-    print(f"\nFinal eğitim için dataset yeniden tokenize ediliyor (seq_len={best_hp.max_seq_len})...")
-    train_dataset = MathSFTDataset(train_raw, tokenizer, best_hp.max_seq_len, mask_prompt=best_hp.mask_prompt)
-    val_dataset   = MathSFTDataset(val_raw,   tokenizer, best_hp.max_seq_len, mask_prompt=False)
+if math.isinf(best_loss):
+    print("\nUYARI: Hiç başarılı tur tamamlanamadı — final eğitim atlanıyor.")
+else:
+    print(f"\nFinal eğitim başlıyor...")
+    print(f"  Kullanılacak HP: val_loss={best_loss:.6f} olan tur")
+    print(f"  Süre: {FINAL_TRAIN_BUDGET // 60} dakika")
 
-gc.enable(); gc.collect(); torch.cuda.empty_cache()
+    # Dataset'i en iyi HP'nin seq_len'ine göre yeniden oluştur (gerekirse)
+    cur_seq_len = train_dataset.data[0][0].size(0) if train_dataset.data else 0
+    if best_hp.max_seq_len != cur_seq_len:
+        print(f"  Dataset yeniden tokenize ediliyor (seq_len={best_hp.max_seq_len})...")
+        train_dataset = MathSFTDataset(train_raw, tokenizer, best_hp.max_seq_len, mask_prompt=best_hp.mask_prompt)
+        val_dataset   = MathSFTDataset(val_raw,   tokenizer, best_hp.max_seq_len, mask_prompt=False)
 
-run_final_training(
-    hp             = best_hp,
-    tokenizer      = tokenizer,
-    train_dataset  = train_dataset,
-    val_dataset    = val_dataset,
-    device         = device,
-    base_model_name= MODEL_NAME,
-    time_budget    = FINAL_TRAIN_BUDGET,
-    save_dir       = FINAL_SAVE_DIR,
-)
+    gc.enable(); gc.collect(); torch.cuda.empty_cache()
+
+    run_final_training(
+        hp              = best_hp,
+        tokenizer       = tokenizer,
+        train_dataset   = train_dataset,
+        val_dataset     = val_dataset,
+        device          = device,
+        base_model_name = MODEL_NAME,
+        time_budget     = FINAL_TRAIN_BUDGET,
+        save_dir        = FINAL_SAVE_DIR,
+    )
