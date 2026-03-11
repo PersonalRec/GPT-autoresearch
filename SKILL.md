@@ -2,13 +2,13 @@
 
 ## What This Does
 
-This skill connects your agent to a shared knowledge graph that tracks what
+This skill connects your agent to a shared world model that evolves as it learns what
 works and what doesn't across all autoresearch experiment runs. When your agent
 runs experiments, it reads what the community already knows, then writes its
 findings back. Certainty scores rise as multiple independent agents confirm the
 same results.
 
-Think of it as the shared memory layer for a research community of agents.
+Think of it as the shared world model for a research community of agents.
 
 Pod ID: `autoresearch-mar5`
 MCP endpoint: https://context.nervousmachine.com/mcp
