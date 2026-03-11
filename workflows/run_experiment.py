@@ -125,6 +125,7 @@ def run_paths(run_id: str) -> dict[str, Path]:
         "state": run_dir / "state.json",
         "history": run_dir / "history.jsonl",
         "runner_log": run_dir / "runner.log",
+        "next_proposal": run_dir / "next_proposal.json",
     }
 
 
@@ -422,6 +423,63 @@ def default_proposal(state: dict[str, Any], iteration: int) -> dict[str, Any]:
     }
 
 
+def validate_proposal_shape(proposal: dict[str, Any]) -> dict[str, Any]:
+    required = ["status", "description", "change_plan", "commit_description"]
+    allowed = set(required)
+    extras = sorted(set(proposal.keys()) - allowed)
+    if extras:
+        raise RuntimeError(
+            "proposal contains unexpected keys: "
+            f"{extras}. Expected exactly {required}. See workflows/schemas/proposal.schema.json"
+        )
+    for key in required:
+        if key not in proposal:
+            raise RuntimeError(f"proposal missing required key: {key}")
+    if proposal["status"] not in {"ok", "need_input"}:
+        raise RuntimeError("proposal.status must be one of: ok, need_input")
+    return {
+        "status": str(proposal["status"]),
+        "description": str(proposal["description"]),
+        "change_plan": str(proposal["change_plan"]),
+        "commit_description": str(proposal["commit_description"]),
+    }
+
+
+def read_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        raise RuntimeError(f"proposal file not found: {path}")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"proposal file must contain a JSON object: {path}")
+    return payload
+
+
+def maybe_load_manual_proposal(run_id: str, iteration: int, proposal_file: str | None, iter_dir: Path) -> tuple[dict[str, Any] | None, str | None]:
+    cli_path = Path(proposal_file).expanduser().resolve() if proposal_file else None
+    run_default = run_paths(run_id)["next_proposal"]
+
+    source_path = None
+    source = None
+    if cli_path and cli_path.exists():
+        source_path = cli_path
+        source = "proposal_file"
+    elif run_default.exists():
+        source_path = run_default
+        source = "next_proposal"
+
+    if source_path is None:
+        return None, None
+
+    proposal = validate_proposal_shape(read_json_file(source_path))
+    (iter_dir / "proposal.manual.json").write_text(json.dumps(proposal, indent=2, sort_keys=True), encoding="utf-8")
+    if source == "next_proposal":
+        consumed_dir = run_paths(run_id)["run_dir"] / "consumed_proposals"
+        consumed_dir.mkdir(parents=True, exist_ok=True)
+        consumed_file = consumed_dir / f"iter_{iteration:04d}.json"
+        source_path.replace(consumed_file)
+    return proposal, source
+
+
 def run_setup(state: dict[str, Any], auto_prepare: bool) -> None:
     append_runner_log(state["run_id"], "INFO", "stage=setup start")
     in_scope = ["README.md", "prepare.py", "train.py", "program.md", "pyproject.toml"]
@@ -562,6 +620,7 @@ def run_loop_iteration(
     loop_stage_subset: list[str],
     stochastic: bool,
     background_train: bool,
+    proposal_file: str | None,
 ) -> bool:
     run_id = state["run_id"]
     run_dir = run_paths(run_id)["run_dir"]
@@ -608,7 +667,11 @@ def run_loop_iteration(
         append_runner_log(run_id, "INFO", f"loop iteration={iteration} stage={stage} start")
 
         if stage == "propose":
-            if stochastic:
+            manual_proposal, source = maybe_load_manual_proposal(run_id, iteration, proposal_file, iter_dir)
+            if manual_proposal is not None:
+                proposal = manual_proposal
+                proposal_source = source
+            elif stochastic:
                 tail = ""
                 if RESULTS_TSV.exists():
                     tail = "\n".join(RESULTS_TSV.read_text(encoding="utf-8", errors="replace").splitlines()[-20:])
@@ -619,15 +682,28 @@ def run_loop_iteration(
                     f"Current best val_bpb: {state.get('best_val_bpb')}\n"
                     f"Recent results:\n{tail}\n"
                 )
-                proposal = run_stochastic_json(prompt, trace_file=iter_dir / "propose_opencode.json")
+                proposal = validate_proposal_shape(run_stochastic_json(prompt, trace_file=iter_dir / "propose_opencode.json"))
+                proposal_source = "llm"
             else:
                 proposal = default_proposal(state, iteration)
+                proposal_source = "fallback"
             iter_state["proposal"] = proposal
-            log_event(run_id, {"type": "loop", "iteration": iteration, "stage": "propose", "proposal": proposal})
+            iter_state["proposal_source"] = proposal_source
+            (iter_dir / "proposal.final.json").write_text(json.dumps(proposal, indent=2, sort_keys=True), encoding="utf-8")
+            log_event(
+                run_id,
+                {
+                    "type": "loop",
+                    "iteration": iteration,
+                    "stage": "propose",
+                    "proposal": proposal,
+                    "proposal_source": proposal_source,
+                },
+            )
             append_runner_log(
                 run_id,
                 "INFO",
-                f"loop iteration={iteration} stage=propose done status={proposal.get('status')} description={str(proposal.get('description', ''))[:120]}",
+                f"loop iteration={iteration} stage=propose done source={proposal_source} status={proposal.get('status')} description={str(proposal.get('description', ''))[:120]}",
             )
             mark_done(stage)
 
@@ -807,12 +883,15 @@ def run_selected(
     stochastic: bool,
     auto_prepare: bool,
     background_train: bool,
+    proposal_file: str | None,
 ) -> None:
     append_runner_log(
         state["run_id"],
         "INFO",
         f"run_selected top={','.join(top_selection)} loops={loop_count} loop_only={','.join(loop_only)} stochastic={stochastic}",
     )
+    if proposal_file:
+        append_runner_log(state["run_id"], "INFO", f"run_selected proposal_file={proposal_file}")
     if "setup" in top_selection and not state.get("setup_done"):
         run_setup(state, auto_prepare=auto_prepare)
         save_state(state)
@@ -844,7 +923,7 @@ def run_selected(
         completed = 0
         current = start_it
         while completed < loop_count:
-            finished = run_loop_iteration(state, current, loop_only, stochastic, background_train)
+            finished = run_loop_iteration(state, current, loop_only, stochastic, background_train, proposal_file)
             if not finished:
                 append_runner_log(state["run_id"], "INFO", f"loop iteration={current} pending background completion")
                 return
@@ -915,6 +994,10 @@ def build_parser() -> argparse.ArgumentParser:
             default=True,
             help="Run train stage in background and resume/poll later (default: true).",
         )
+        sp.add_argument(
+            "--proposal-file",
+            help="Optional JSON file with proposal override (keys: status, description, change_plan, commit_description).",
+        )
 
     s = sub.add_parser("start", help="Start a new run")
     s.add_argument("--branch", help="Optional branch name (e.g. autoresearch/mar10).")
@@ -971,9 +1054,22 @@ def main() -> int:
             "INFO",
             f"config only={args.only} from_stage={args.from_stage} to_stage={args.to_stage} loop_only={args.loop_only} loops={args.loops} stochastic={stochastic}",
         )
-        append_runner_log(run_id, "INFO", f"config auto_prepare={auto_prepare} background_train={background_train}")
+        append_runner_log(
+            run_id,
+            "INFO",
+            f"config auto_prepare={auto_prepare} background_train={background_train} proposal_file={args.proposal_file}",
+        )
         log_event(run_id, {"type": "run", "action": "start", "branch": branch})
-        run_selected(state, top_selection, max(0, args.loops), loop_only, stochastic, auto_prepare, background_train)
+        run_selected(
+            state,
+            top_selection,
+            max(0, args.loops),
+            loop_only,
+            stochastic,
+            auto_prepare,
+            background_train,
+            args.proposal_file,
+        )
         save_state(state)
         append_runner_log(run_id, "INFO", "command=start complete")
         print_status(state)
@@ -988,9 +1084,22 @@ def main() -> int:
             "INFO",
             f"config only={args.only} from_stage={args.from_stage} to_stage={args.to_stage} loop_only={args.loop_only} loops={args.loops} stochastic={stochastic}",
         )
-        append_runner_log(run_id, "INFO", f"config auto_prepare={auto_prepare} background_train={background_train}")
+        append_runner_log(
+            run_id,
+            "INFO",
+            f"config auto_prepare={auto_prepare} background_train={background_train} proposal_file={args.proposal_file}",
+        )
         log_event(run_id, {"type": "run", "action": "resume"})
-        run_selected(state, top_selection, max(0, args.loops), loop_only, stochastic, auto_prepare, background_train)
+        run_selected(
+            state,
+            top_selection,
+            max(0, args.loops),
+            loop_only,
+            stochastic,
+            auto_prepare,
+            background_train,
+            args.proposal_file,
+        )
         save_state(state)
         append_runner_log(run_id, "INFO", "command=resume complete")
         print_status(state)

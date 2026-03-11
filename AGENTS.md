@@ -41,6 +41,33 @@ Supported control flags:
 - `--loop-only <comma-list>`: limit loop internals to selected stages
 - `--loops N`: run `N` loop iterations
 
+## Human Proposal Override
+
+- You can inject a human-authored proposal for the next `propose` stage.
+- Option A (run-scoped default): write JSON to `workflows/runs/<run_id>/next_proposal.json`.
+- Option B (explicit path): pass `--proposal-file <path>` on `start`/`resume`.
+- Proposal JSON must include exactly these keys:
+  - `status` (`ok` or `need_input`)
+  - `description`
+  - `change_plan`
+  - `commit_description`
+- Canonical schema: `workflows/schemas/proposal.schema.json`
+- Example:
+  ```json
+  {
+    "status": "ok",
+    "description": "Try slightly higher learning rate with warmup unchanged.",
+    "change_plan": "In train.py, increase base LR by ~10% and keep all other settings unchanged.",
+    "commit_description": "experiment: bump LR by 10%"
+  }
+  ```
+- Precedence in propose stage:
+  1) `--proposal-file` (if present)
+  2) `workflows/runs/<run_id>/next_proposal.json`
+  3) stochastic proposal
+  4) deterministic fallback (`--no-stochastic`)
+- When `next_proposal.json` is consumed, it is moved to `workflows/runs/<run_id>/consumed_proposals/iter_<NNNN>.json`.
+
 ## Resume Behavior
 
 - The script checkpoints state at `workflows/runs/<run_id>/state.json`.

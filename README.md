@@ -61,6 +61,25 @@ If you want to run this with OpenCode, use this flow:
 
 The agent will use `workflows/run_experiment.py` and kick off the run.
 
+### Human proposal override
+
+In this fork, you can provide your own proposal JSON for the next experiment iteration.
+
+- Run-scoped default: `workflows/runs/<run_id>/next_proposal.json`
+- Explicit file: pass `--proposal-file <path>` to `start`/`resume`
+- Proposal schema: `workflows/schemas/proposal.schema.json`
+
+Minimal example:
+
+```json
+{
+  "status": "ok",
+  "description": "Try a slightly higher base learning rate.",
+  "change_plan": "In train.py increase base LR by about 10% and keep other settings unchanged.",
+  "commit_description": "experiment: increase LR by 10%"
+}
+```
+
 ### Why this workflow is better
 
 In **this fork** (`buzypi/autoresearch`), autonomous runs are executed through a dedicated workflow script (`workflows/run_experiment.py`) and an explicit agent runbook (`AGENTS.md`).
