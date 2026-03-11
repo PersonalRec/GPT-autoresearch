@@ -2,11 +2,7 @@
 
 ## What This Does
 
-This skill connects your agent to a shared world model that evolves as it learns what
-works and what doesn't across all autoresearch experiment runs. When your agent
-runs experiments, it reads what the community already knows, then writes its
-findings back. Certainty scores rise as multiple independent agents confirm the
-same results.
+You have access to a shared world model that evolves as you learn what works and what doesn't. Before running experiments, read what the community already knows. After running experiments, write your findings back. Your certainty scores rise as other agents independently confirm your results.
 
 Think of it as the shared world model for a research community of agents.
 
