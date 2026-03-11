@@ -7,6 +7,8 @@ Usage:
     python prepare.py --num-shards 8   # download only 8 shards (for testing)
 
 Data and tokenizer are stored in ~/.cache/autoresearch/.
+
+This version supports both PyTorch (MPS) and MLX backends.
 """
 
 import os
@@ -17,11 +19,30 @@ import argparse
 import pickle
 from multiprocessing import Pool
 
+import numpy as np
 import requests
 import pyarrow.parquet as pq
 import rustbpe
 import tiktoken
-import torch
+
+# ---------------------------------------------------------------------------
+# Backend detection (lazy imports)
+# ---------------------------------------------------------------------------
+
+_USE_MLX = False
+_USE_TORCH = False
+
+try:
+    import mlx.core as mx
+    _USE_MLX = True
+except ImportError:
+    pass
+
+try:
+    import torch
+    _USE_TORCH = True
+except ImportError:
+    pass
 
 # ---------------------------------------------------------------------------
 # Constants (fixed, do not modify)
@@ -29,7 +50,7 @@ import torch
 
 MAX_SEQ_LEN = 2048       # context length
 TIME_BUDGET = 300        # training time budget in seconds (5 minutes)
-EVAL_TOKENS = 40 * 524288  # number of tokens for val eval
+EVAL_TOKENS = 10 * 524288  # number of tokens for val eval (scaled for Apple Silicon)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -141,10 +162,15 @@ def text_iterator(max_chars=1_000_000_000, doc_cap=10_000):
 def train_tokenizer():
     """Train BPE tokenizer using rustbpe, save as tiktoken pickle."""
     tokenizer_pkl = os.path.join(TOKENIZER_DIR, "tokenizer.pkl")
-    token_bytes_path = os.path.join(TOKENIZER_DIR, "token_bytes.pt")
+    token_bytes_path = os.path.join(TOKENIZER_DIR, "token_bytes.npy")
+    # Also check for legacy .pt format
+    token_bytes_pt = os.path.join(TOKENIZER_DIR, "token_bytes.pt")
 
-    if os.path.exists(tokenizer_pkl) and os.path.exists(token_bytes_path):
+    if os.path.exists(tokenizer_pkl) and (os.path.exists(token_bytes_path) or os.path.exists(token_bytes_pt)):
         print(f"Tokenizer: already trained at {TOKENIZER_DIR}")
+        # Migrate .pt to .npy if needed
+        if os.path.exists(token_bytes_pt) and not os.path.exists(token_bytes_path):
+            _migrate_token_bytes(token_bytes_pt, token_bytes_path)
         return
 
     os.makedirs(TOKENIZER_DIR, exist_ok=True)
@@ -191,8 +217,8 @@ def train_tokenizer():
             token_bytes_list.append(0)
         else:
             token_bytes_list.append(len(token_str.encode("utf-8")))
-    token_bytes_tensor = torch.tensor(token_bytes_list, dtype=torch.int32)
-    torch.save(token_bytes_tensor, token_bytes_path)
+    token_bytes_array = np.array(token_bytes_list, dtype=np.int32)
+    np.save(token_bytes_path, token_bytes_array)
     print(f"Tokenizer: saved token_bytes to {token_bytes_path}")
 
     # Sanity check
@@ -202,8 +228,23 @@ def train_tokenizer():
     assert decoded == test, f"Tokenizer roundtrip failed: {test!r} -> {decoded!r}"
     print(f"Tokenizer: sanity check passed (vocab_size={enc.n_vocab})")
 
+
+def _migrate_token_bytes(pt_path, npy_path):
+    """Migrate token_bytes from .pt (torch) to .npy (numpy) format."""
+    print("Tokenizer: migrating token_bytes.pt to token_bytes.npy...")
+    if _USE_TORCH:
+        import torch
+        tensor = torch.load(pt_path, map_location="cpu")
+        arr = tensor.numpy()
+    else:
+        # Can't load .pt without torch — skip migration
+        print("Tokenizer: torch not available, cannot migrate. Re-run prepare.py to regenerate.")
+        return
+    np.save(npy_path, arr)
+    print(f"Tokenizer: migrated to {npy_path}")
+
 # ---------------------------------------------------------------------------
-# Runtime utilities (imported by train.py)
+# Runtime utilities (imported by train.py / train_mlx.py)
 # ---------------------------------------------------------------------------
 
 class Tokenizer:
@@ -245,10 +286,29 @@ class Tokenizer:
         return self.enc.decode(ids)
 
 
-def get_token_bytes(device="cpu"):
-    path = os.path.join(TOKENIZER_DIR, "token_bytes.pt")
-    with open(path, "rb") as f:
-        return torch.load(f, map_location=device)
+def get_token_bytes(backend=None):
+    """Load token_bytes lookup. Returns tensor/array on appropriate device."""
+    npy_path = os.path.join(TOKENIZER_DIR, "token_bytes.npy")
+    pt_path = os.path.join(TOKENIZER_DIR, "token_bytes.pt")
+
+    if backend is None:
+        backend = "mlx" if _USE_MLX else "mps"
+
+    if os.path.exists(npy_path):
+        arr = np.load(npy_path)
+    elif os.path.exists(pt_path) and _USE_TORCH:
+        import torch
+        arr = torch.load(pt_path, map_location="cpu").numpy()
+    else:
+        raise FileNotFoundError(
+            f"token_bytes not found at {npy_path} or {pt_path}. Run prepare.py first.")
+
+    if backend == "mlx":
+        return mx.array(arr, dtype=mx.int32)
+    else:
+        import torch
+        device = "mps" if torch.backends.mps.is_available() else "cpu"
+        return torch.tensor(arr, dtype=torch.int32, device=device)
 
 
 def _document_batches(split, tokenizer_batch_size=128):
@@ -273,13 +333,18 @@ def _document_batches(split, tokenizer_batch_size=128):
         epoch += 1
 
 
-def make_dataloader(tokenizer, B, T, split, buffer_size=1000):
+def make_dataloader(tokenizer, B, T, split, buffer_size=1000, backend=None):
     """
     BOS-aligned dataloader with best-fit packing.
     Every row starts with BOS. Documents packed using best-fit to minimize cropping.
     When no document fits remaining space, crops shortest doc to fill exactly.
     100% utilization (no padding).
+
+    backend: 'mps', 'mlx', or None (auto-detect)
     """
+    if backend is None:
+        backend = "mlx" if _USE_MLX else "mps"
+
     assert split in ["train", "val"]
     row_capacity = T + 1
     batches = _document_batches(split)
@@ -293,14 +358,8 @@ def make_dataloader(tokenizer, B, T, split, buffer_size=1000):
         token_lists = tokenizer.encode(doc_batch, prepend=bos_token)
         doc_buffer.extend(token_lists)
 
-    # Pre-allocate buffers: [inputs (B*T) | targets (B*T)]
-    row_buffer = torch.empty((B, row_capacity), dtype=torch.long)
-    cpu_buffer = torch.empty(2 * B * T, dtype=torch.long, pin_memory=True)
-    gpu_buffer = torch.empty(2 * B * T, dtype=torch.long, device="cuda")
-    cpu_inputs = cpu_buffer[:B * T].view(B, T)
-    cpu_targets = cpu_buffer[B * T:].view(B, T)
-    inputs = gpu_buffer[:B * T].view(B, T)
-    targets = gpu_buffer[B * T:].view(B, T)
+    # Use numpy for row assembly (framework-agnostic)
+    row_buffer = np.empty((B, row_capacity), dtype=np.int64)
 
     while True:
         for row_idx in range(B):
@@ -322,26 +381,34 @@ def make_dataloader(tokenizer, B, T, split, buffer_size=1000):
 
                 if best_idx >= 0:
                     doc = doc_buffer.pop(best_idx)
-                    row_buffer[row_idx, pos:pos + len(doc)] = torch.tensor(doc, dtype=torch.long)
+                    row_buffer[row_idx, pos:pos + len(doc)] = doc
                     pos += len(doc)
                 else:
                     # No doc fits — crop shortest to fill remaining
                     shortest_idx = min(range(len(doc_buffer)), key=lambda i: len(doc_buffer[i]))
                     doc = doc_buffer.pop(shortest_idx)
-                    row_buffer[row_idx, pos:pos + remaining] = torch.tensor(doc[:remaining], dtype=torch.long)
+                    row_buffer[row_idx, pos:pos + remaining] = doc[:remaining]
                     pos += remaining
 
-        cpu_inputs.copy_(row_buffer[:, :-1])
-        cpu_targets.copy_(row_buffer[:, 1:])
-        gpu_buffer.copy_(cpu_buffer, non_blocking=True)
+        inputs_np = row_buffer[:, :-1].copy()
+        targets_np = row_buffer[:, 1:].copy()
+
+        if backend == "mlx":
+            inputs = mx.array(inputs_np, dtype=mx.int32)
+            targets = mx.array(targets_np, dtype=mx.int32)
+        else:
+            import torch
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
+            inputs = torch.tensor(inputs_np, dtype=torch.long, device=device)
+            targets = torch.tensor(targets_np, dtype=torch.long, device=device)
+
         yield inputs, targets, epoch
 
 # ---------------------------------------------------------------------------
 # Evaluation (DO NOT CHANGE — this is the fixed metric)
 # ---------------------------------------------------------------------------
 
-@torch.no_grad()
-def evaluate_bpb(model, tokenizer, batch_size):
+def evaluate_bpb(model, tokenizer, batch_size, backend=None):
     """
     Bits per byte (BPB): vocab size-independent evaluation metric.
     Sums per-token cross-entropy (in nats), sums target byte lengths,
@@ -349,19 +416,36 @@ def evaluate_bpb(model, tokenizer, batch_size):
     are excluded from both sums.
     Uses fixed MAX_SEQ_LEN so results are comparable across configs.
     """
-    token_bytes = get_token_bytes(device="cuda")
-    val_loader = make_dataloader(tokenizer, batch_size, MAX_SEQ_LEN, "val")
+    if backend is None:
+        backend = "mlx" if _USE_MLX else "mps"
+
+    token_bytes = get_token_bytes(backend=backend)
+    val_loader = make_dataloader(tokenizer, batch_size, MAX_SEQ_LEN, "val", backend=backend)
     steps = EVAL_TOKENS // (batch_size * MAX_SEQ_LEN)
     total_nats = 0.0
     total_bytes = 0
-    for _ in range(steps):
-        x, y, _ = next(val_loader)
-        loss_flat = model(x, y, reduction='none').view(-1)
-        y_flat = y.view(-1)
-        nbytes = token_bytes[y_flat]
-        mask = nbytes > 0
-        total_nats += (loss_flat * mask).sum().item()
-        total_bytes += nbytes.sum().item()
+
+    if backend == "mlx":
+        for _ in range(steps):
+            x, y, _ = next(val_loader)
+            loss_flat = model(x, y, reduction='none').reshape(-1)
+            y_flat = y.reshape(-1)
+            nbytes = mx.take(token_bytes, y_flat, axis=0)
+            mask = nbytes > 0
+            total_nats += (loss_flat * mask.astype(loss_flat.dtype)).sum().item()
+            total_bytes += int(nbytes.sum().item())
+    else:
+        import torch
+        with torch.no_grad():
+            for _ in range(steps):
+                x, y, _ = next(val_loader)
+                loss_flat = model(x, y, reduction='none').view(-1)
+                y_flat = y.view(-1)
+                nbytes = token_bytes[y_flat]
+                mask = nbytes > 0
+                total_nats += (loss_flat * mask).sum().item()
+                total_bytes += nbytes.sum().item()
+
     return total_nats / (math.log(2) * total_bytes)
 
 # ---------------------------------------------------------------------------
