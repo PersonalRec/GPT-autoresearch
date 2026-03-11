@@ -64,18 +64,28 @@ def newton_schulz_orthogonalize(X, ns_steps=5):
 # Helper to set a nested parameter by path
 # ---------------------------------------------------------------------------
 
+def _navigate_part(obj, part):
+    """Navigate one level into a nested MLX model structure."""
+    if part.isdigit():
+        # Could be a list index (e.g. blocks.1) or dict key (e.g. value_embeds.1)
+        if isinstance(obj, dict):
+            return obj[part]  # dict keyed by string
+        return obj[int(part)]  # list indexed by int
+    return getattr(obj, part)
+
+
 def _set_param_by_path(model, path, value):
     """Set a parameter in an MLX model by its dot-separated path."""
     parts = path.split(".")
     obj = model
     for part in parts[:-1]:
-        if part.isdigit():
-            obj = obj[int(part)]
-        else:
-            obj = getattr(obj, part)
+        obj = _navigate_part(obj, part)
     last = parts[-1]
     if last.isdigit():
-        obj[int(last)] = value
+        if isinstance(obj, dict):
+            obj[last] = value
+        else:
+            obj[int(last)] = value
     else:
         setattr(obj, last, value)
 
@@ -85,10 +95,7 @@ def _get_param_by_path(model, path):
     parts = path.split(".")
     obj = model
     for part in parts:
-        if part.isdigit():
-            obj = obj[int(part)]
-        else:
-            obj = getattr(obj, part)
+        obj = _navigate_part(obj, part)
     return obj
 
 
