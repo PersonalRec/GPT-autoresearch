@@ -34,8 +34,15 @@ from datasets import load_dataset
 # ---------------------------------------------------------------------------
 
 MODEL_NAME    = "vngrs-ai/Kumru-2B-Base"
-DATASET_NAME  = "oztrkoguz/Open_Math_Instruct_Turkish"
+DATASET_NAME  = "ytu-ce-cosmos/gsm8k_tr"
 RESULTS_FILE  = "sft_results.tsv"
+
+# Sütun isimleri — dataset'e göre otomatik ayarlanır
+# oztrkoguz/Open_Math_Instruct_Turkish : question / answer
+# ytu-ce-cosmos/gsm8k_tr               : question / answer  (aynı)
+# ituperceptron/turkish-math-186k       : problem  / solution
+QUESTION_COL  = "question"
+ANSWER_COL    = "answer"
 
 TIME_BUDGET         = 300    # her HP deney turu için eğitim süresi (saniye)
 MAX_ROUNDS          = 9999   # sonsuz döngü için büyük bir sayı; Ctrl+C ile dur
@@ -87,8 +94,8 @@ SYSTEM_PROMPT = "Sen yardımcı bir matematik asistanısın. Türkçe matematik 
 # ---------------------------------------------------------------------------
 
 def format_conversation(example, tokenizer):
-    question = example["question"]
-    answer   = example["answer"]
+    question = example[QUESTION_COL]
+    answer   = example[ANSWER_COL]
     if tokenizer.chat_template is not None:
         messages = [
             {"role": "system",    "content": SYSTEM_PROMPT},
@@ -103,7 +110,7 @@ def format_conversation(example, tokenizer):
 
 
 def format_prompt_only(example, tokenizer):
-    question = example["question"]
+    question = example[QUESTION_COL]
     if tokenizer.chat_template is not None:
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -616,11 +623,18 @@ if tokenizer.chat_template:
     print("  Chat template: mevcut")
 
 print(f"\nDataset yükleniyor: {DATASET_NAME}")
-raw_ds     = load_dataset(DATASET_NAME, split="train")
-split_ds   = raw_ds.train_test_split(test_size=0.05, seed=42)
-train_raw  = split_ds["train"]
-val_raw    = split_ds["test"]
-print(f"  Train: {len(train_raw):,} | Val: {len(val_raw):,}")
+_all_splits = load_dataset(DATASET_NAME)
+if "test" in _all_splits:
+    # Hazır train/test split varsa kullan
+    train_raw = _all_splits["train"]
+    val_raw   = _all_splits["test"]
+    print(f"  Hazır split kullanıldı — Train: {len(train_raw):,} | Val: {len(val_raw):,}")
+else:
+    # Sadece train varsa (gsm8k_tr gibi) %95/%5 böl
+    _split = _all_splits["train"].train_test_split(test_size=0.05, seed=42)
+    train_raw = _split["train"]
+    val_raw   = _split["test"]
+    print(f"  Train/val bölündü (%95/%5) — Train: {len(train_raw):,} | Val: {len(val_raw):,}")
 
 # Varsayılan HP ile dataset'i bir kez tokenize et
 default_hp = HParams()
