@@ -2,7 +2,23 @@
 
 ![teaser](progress.png)
 
+> **⚠️ This is a community fork adding AMD ROCm support to the original project.**
+
 *One day, frontier AI research used to be done by meat computers in between eating, sleeping, having other fun, and synchronizing once in a while using sound wave interconnect in the ritual of "group meeting". That era is long gone. Research is now entirely the domain of autonomous swarms of AI agents running across compute cluster megastructures in the skies. The agents claim that we are now in the 10,205th generation of the code base, in any case no one could tell if that's right or wrong as the "code" is now a self-modifying binary that has grown beyond human comprehension. This repo is the story of how it all began. -@karpathy, March 2026*.
+
+---
+
+## 🍴 Fork Information
+
+**Original Project**: [karpathy/autoresearch](https://github.com/karpathy/autoresearch) by Andrej Karpathy  
+**This Fork**: [nikay99/autoresearch-amd](https://github.com/nikay99/autoresearch-amd)  
+**Contributions**: AMD ROCm GPU support (MI300X, MI250X, MI210, MI100)
+
+**All credits for the original codebase go to Andrej Karpathy.** This fork only adds AMD GPU support while maintaining full compatibility with NVIDIA GPUs.
+
+---
+
+## About
 
 The idea: give an AI agent a small but real LLM training setup and let it experiment autonomously overnight. It modifies the code, trains for 5 minutes, checks if the result improved, keeps or discards, and repeats. You wake up in the morning to a log of experiments and (hopefully) a better model. The training code here is a simplified single-GPU implementation of [nanochat](https://github.com/karpathy/nanochat). The core idea is that you're not touching any of the Python files like you normally would as a researcher. Instead, you are programming the `program.md` Markdown files that provide context to the AI agents and set up your autonomous research org. The default `program.md` in this repo is intentionally kept as a bare bones baseline, though it's obvious how one would iterate on it over time to find the "research org code" that achieves the fastest research progress, how you'd add more agents to the mix, etc. A bit more context on this project is here in this [tweet](https://x.com/karpathy/status/2029701092347630069).
 
@@ -85,6 +101,8 @@ For optimal performance on AMD GPUs, you may want to install flash-attn-rocm:
 pip install flash-attn-rocm
 ```
 
+### Hardware Recommendations for Smaller GPUs
+
 Seeing as there seems to be a lot of interest in tinkering with autoresearch on much smaller compute platforms than an H100, a few extra words. If you're going to try running autoresearch on smaller computers (Macbooks etc.), I'd recommend one of the forks below. On top of this, here are some recommendations for how to tune the defaults for much smaller models for aspiring forks:
 
 1. To get half-decent results I'd use a dataset with a lot less entropy, e.g. this [TinyStories dataset](https://huggingface.co/datasets/karpathy/tinystories-gpt4-clean). These are GPT-4 generated short stories. Because the data is a lot narrower in scope, you will see reasonable results with a lot smaller models (if you try to sample from them after training).
@@ -99,15 +117,19 @@ I think these would be the reasonable hyperparameters to play with. Ask your fav
 
 ## Notable forks
 
-- [nikay99/autoresearch-amd](https://github.com/nikay99/autoresearch-amd) (AMD ROCm) - This fork!
+- [nikay99/autoresearch-amd](https://github.com/nikay99/autoresearch-amd) (AMD ROCm) - **This fork!**
 - [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos) (MacOS)
 - [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) (MacOS)
 - [jsegov/autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx) (Windows)
 
 ## Original Project
 
-This is an AMD ROCm adaptation of [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
+- **Author**: [Andrej Karpathy](https://karpathy.ai/)
+- **Repository**: [karpathy/autoresearch](https://github.com/karpathy/autoresearch)
+- **Twitter**: [@karpathy](https://x.com/karpathy)
+
+This fork is a community contribution adding AMD GPU support. If you find this useful, please star both the original repository and this fork!
 
 ## License
 
-MIT
+MIT (same as original project)
