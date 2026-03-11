@@ -1,4 +1,4 @@
-# autoresearch
+# autoresearch-amd
 
 ![teaser](progress.png)
 
@@ -20,7 +20,7 @@ If you are new to neural networks, this ["Dummy's Guide"](https://x.com/hooeem/s
 
 ## Quick start
 
-**Requirements:** A single NVIDIA GPU (tested on H100), Python 3.10+, [uv](https://docs.astral.sh/uv/).
+**Requirements:** A single AMD GPU (ROCm 6.2.4+) or NVIDIA GPU, Python 3.10+, [uv](https://docs.astral.sh/uv/).
 
 ```bash
 
@@ -66,7 +66,24 @@ pyproject.toml  — dependencies
 
 ## Platform support
 
-This code currently requires that you have a single NVIDIA GPU. In principle it is quite possible to support CPU, MPS and other platforms but this would also bloat the code. I'm not 100% sure that I want to take this on personally right now. People can reference (or have their agents reference) the full/parent nanochat repository that has wider platform support and shows the various solutions (e.g. a Flash Attention 3 kernels fallback implementation, generic device support, autodetection, etc.), feel free to create forks or discussions for other platforms and I'm happy to link to them here in the README in some new notable forks section or etc.
+This is an **AMD ROCm fork** of the original autoresearch project. It supports:
+- **AMD GPUs** via ROCm 6.2.4+ (MI300X, MI250X, MI210, MI100)
+- **NVIDIA GPUs** via CUDA (maintained for compatibility)
+
+The code automatically detects your GPU and configures:
+- Flash Attention (uses flash-attn-rocm for AMD, Flash Attention 3 for NVIDIA)
+- Peak FLOPS for MFU calculation (auto-detected for common AMD/NVIDIA GPUs)
+- Memory management (ROCm uses the same `torch.cuda` APIs)
+
+### AMD ROCm Setup
+
+Ensure you have ROCm 6.2.4+ installed. The PyTorch index is already configured in `pyproject.toml`.
+
+For optimal performance on AMD GPUs, you may want to install flash-attn-rocm:
+```bash
+# The dependency is optional - if not installed, eager attention fallback is used
+pip install flash-attn-rocm
+```
 
 Seeing as there seems to be a lot of interest in tinkering with autoresearch on much smaller compute platforms than an H100, a few extra words. If you're going to try running autoresearch on smaller computers (Macbooks etc.), I'd recommend one of the forks below. On top of this, here are some recommendations for how to tune the defaults for much smaller models for aspiring forks:
 
@@ -82,9 +99,14 @@ I think these would be the reasonable hyperparameters to play with. Ask your fav
 
 ## Notable forks
 
+- [nikay99/autoresearch-amd](https://github.com/nikay99/autoresearch-amd) (AMD ROCm) - This fork!
 - [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos) (MacOS)
 - [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) (MacOS)
 - [jsegov/autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx) (Windows)
+
+## Original Project
+
+This is an AMD ROCm adaptation of [karpathy/autoresearch](https://github.com/karpathy/autoresearch).
 
 ## License
 

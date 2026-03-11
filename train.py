@@ -7,6 +7,7 @@ Usage: uv run train.py
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["HIP_VISIBLE_DEVICES"] = "0"  # Use first AMD GPU by default
 
 import gc
 import math
@@ -17,11 +18,81 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from kernels import get_kernel
-cap = torch.cuda.get_device_capability()
-# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
-repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
-fa3 = get_kernel(repo).flash_attn_interface
+# ROCm/AMD GPU detection and Flash Attention setup
+def get_flash_attention_fn():
+    """Get Flash Attention function for AMD ROCm or fallback to eager attention."""
+    if not torch.cuda.is_available():
+        return None
+    
+    # Check if we're on AMD ROCm
+    if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+        try:
+            # Try flash-attn-rocm for AMD GPUs
+            from flash_attn_rocm import flash_attn_func
+            print("Using flash-attn-rocm for AMD GPU")
+            return flash_attn_func
+        except ImportError:
+            print("Warning: flash-attn-rocm not installed, using eager attention fallback")
+            return None
+    else:
+        # NVIDIA path - use kernels package
+        try:
+            from kernels import get_kernel
+            cap = torch.cuda.get_device_capability()
+            repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
+            fa3 = get_kernel(repo).flash_attn_interface
+            print(f"Using Flash Attention 3 from {repo}")
+            return fa3.flash_attn_func
+        except Exception as e:
+            print(f"Warning: Could not load Flash Attention: {e}")
+            return None
+
+# Global flash attention function (may be None if not available)
+_flash_attn_func = None
+
+def flash_attn_wrapper(q, k, v, causal=True, window_size=(-1, -1)):
+    """Wrapper that uses flash attention if available, otherwise falls back to eager."""
+    global _flash_attn_func
+    if _flash_attn_func is None:
+        _flash_attn_func = get_flash_attention_fn()
+    
+    if _flash_attn_func is not None:
+        try:
+            return _flash_attn_func(q, k, v, causal=causal, window_size=window_size)
+        except Exception as e:
+            # Fallback on any flash attention error
+            pass
+    
+    # Eager attention fallback (SDPA or manual implementation)
+    return eager_attention(q, k, v, causal, window_size)
+
+
+def eager_attention(q, k, v, causal=True, window_size=(-1, -1)):
+    """Eager attention implementation as fallback for ROCm without flash-attn."""
+    B, T, H, D = q.shape
+    _, S, _, _ = k.shape
+    
+    # Compute attention scores
+    scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(D)
+    
+    # Apply causal mask if needed
+    if causal:
+        if window_size[0] > 0:
+            # Sliding window attention
+            mask = torch.ones(T, S, device=q.device, dtype=torch.bool)
+            for i in range(T):
+                start = max(0, i - window_size[0] + 1)
+                mask[i, :start] = False
+                mask[i, i+1:] = False
+            scores = scores.masked_fill(~mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+        else:
+            # Full causal mask
+            mask = torch.triu(torch.ones(T, S, device=q.device), diagonal=1).bool()
+            scores = scores.masked_fill(mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+    
+    attn = torch.softmax(scores, dim=-1)
+    out = torch.matmul(attn, v)
+    return out
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
@@ -90,7 +161,7 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        y = flash_attn_wrapper(q, k, v, causal=True, window_size=window_size)
         y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
@@ -455,12 +526,60 @@ DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
 # ---------------------------------------------------------------------------
 
 t_start = time.time()
+# AMD ROCm / NVIDIA CUDA device setup
+def get_device():
+    """Get the best available device (ROCm or CUDA)."""
+    if torch.cuda.is_available():
+        device_name = torch.cuda.get_device_name(0)
+        if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+            print(f"Using AMD ROCm device: {device_name}")
+        else:
+            print(f"Using NVIDIA CUDA device: {device_name}")
+        return torch.device("cuda")
+    raise RuntimeError("No GPU available - ROCm/CUDA required")
+
+def get_gpu_peak_flops():
+    """Get peak BF16 FLOPS for the current GPU (AMD or NVIDIA)."""
+    if not torch.cuda.is_available():
+        return 0
+    
+    device_name = torch.cuda.get_device_name(0).lower()
+    
+    # AMD GPUs (MI series)
+    if 'mi300x' in device_name or 'mi300' in device_name:
+        return 1300e12  # MI300X ~1.3 PFLOPS BF16
+    elif 'mi250x' in device_name or 'mi250' in device_name:
+        return 383e12   # MI250X ~383 TFLOPS BF16
+    elif 'mi210' in device_name:
+        return 181e12   # MI210 ~181 TFLOPS BF16
+    elif 'mi100' in device_name:
+        return 184e12   # MI100 ~184 TFLOPS BF16
+    # NVIDIA GPUs
+    elif 'h100' in device_name or 'h200' in device_name:
+        return 989.5e12  # H100 SXM5
+    elif 'a100' in device_name:
+        return 312e12    # A100 SXM4
+    elif 'l40s' in device_name:
+        return 183e12    # L40S
+    elif 'rtx 4090' in device_name:
+        return 82.6e12   # RTX 4090
+    elif 'rtx 3090' in device_name:
+        return 71e12     # RTX 3090
+    else:
+        # Default conservative estimate
+        print(f"Warning: Unknown GPU {device_name}, using conservative FLOPS estimate")
+        return 100e12
+
+device = get_device()
 torch.manual_seed(42)
-torch.cuda.manual_seed(42)
+if hasattr(torch.cuda, 'manual_seed'):
+    torch.cuda.manual_seed(42)
 torch.set_float32_matmul_precision("high")
-device = torch.device("cuda")
+
+# ROCm uses same autocast interface as CUDA
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-H100_BF16_PEAK_FLOPS = 989.5e12
+GPU_BF16_PEAK_FLOPS = get_gpu_peak_flops()
+print(f"Peak BF16 FLOPS: {GPU_BF16_PEAK_FLOPS/1e12:.1f} TFLOPS")
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
@@ -541,7 +660,8 @@ total_training_time = 0
 step = 0
 
 while True:
-    torch.cuda.synchronize()
+    if hasattr(torch.cuda, 'synchronize'):
+        torch.cuda.synchronize()
     t0 = time.time()
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
@@ -571,7 +691,8 @@ while True:
         print("FAIL")
         exit(1)
 
-    torch.cuda.synchronize()
+    if hasattr(torch.cuda, 'synchronize'):
+        torch.cuda.synchronize()
     t1 = time.time()
     dt = t1 - t0
 
@@ -584,7 +705,7 @@ while True:
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
     pct_done = 100 * progress
     tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / H100_BF16_PEAK_FLOPS
+    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / GPU_BF16_PEAK_FLOPS
     remaining = max(0, TIME_BUDGET - total_training_time)
 
     print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
@@ -615,8 +736,11 @@ with autocast_ctx:
 # Final summary
 t_end = time.time()
 startup_time = t_start_training - t_start
-steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / H100_BF16_PEAK_FLOPS if total_training_time > 0 else 0
-peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
+steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / GPU_BF16_PEAK_FLOPS if total_training_time > 0 else 0
+if hasattr(torch.cuda, 'max_memory_allocated'):
+    peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
+else:
+    peak_vram_mb = 0  # Fallback if not available
 
 print("---")
 print(f"val_bpb:          {val_bpb:.6f}")

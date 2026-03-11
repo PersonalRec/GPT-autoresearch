@@ -1,6 +1,8 @@
-# autoresearch
+# autoresearch-amd
 
 This is an experiment to have the LLM do its own research.
+
+**Note: This is the AMD ROCm fork** - supports AMD GPUs (MI300X, MI250X, MI210, MI100) via ROCm 6.2.4+ as well as NVIDIA GPUs for compatibility.
 
 ## Setup
 
