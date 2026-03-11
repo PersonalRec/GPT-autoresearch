@@ -83,8 +83,12 @@ I think these would be the reasonable hyperparameters to play with. Ask your fav
 ## Notable forks
 
 - [miolini/autoresearch-macos](https://github.com/miolini/autoresearch-macos) (MacOS)
-- [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) (MacOS)
+- [trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) (MacOS, MLX framework)
 - [jsegov/autoresearch-win-rtx](https://github.com/jsegov/autoresearch-win-rtx) (Windows)
+- [sanbuphy/autoresearch-cn](https://github.com/sanbuphy/autoresearch-cn) (Chinese community)
+- [eimenhmdt/autoresearcher](https://github.com/eimenhmdt/autoresearcher) (Research enhancements)
+- [hwchase17/autoresearch-agents](https://github.com/hwchase17/autoresearch-agents) (Multi-agent improvements)
+- [ncdrone/autoresearch-ANE](https://github.com/ncdrone/autoresearch-ANE) (Apple Neural Engine)
 
 ## License
 
