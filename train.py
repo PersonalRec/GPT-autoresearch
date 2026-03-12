@@ -303,7 +303,7 @@ def main():
 
     # Phase 2: Two-feature combinations
     print("Phase 3: Two-feature combinations...")
-    combo_scales = [0.001, 0.002, 0.003, 0.005]
+    combo_scales = [0.001, 0.0015, 0.002, 0.003, 0.005]
     for i in range(6):
         for j in range(i + 1, 6):
             for si in [-1, +1]:
@@ -314,8 +314,22 @@ def main():
                             sharpe, max_dd, n_trades = _quick_backtest(preds, close)
                             if n_trades >= 30:
                                 score = sharpe * min(1.0, 0.25 / max(abs(max_dd), 0.01))
-                                # Store as special format with negative feat_idx
                                 candidates.append((score, -(i * 10 + j), si, sc_i, sj * sc_j))
+
+    # Phase 3b: Mean-reversion + momentum bias combinations
+    # short MR + long momentum (e.g., -4h + +168h)
+    print("Phase 3b: MR+momentum bias combos...")
+    for mr_idx in [1, 2, 3, 4]:  # short/medium term MR
+        for mom_idx in [4, 5]:  # long term momentum
+            if mr_idx == mom_idx:
+                continue
+            for mr_scale in [0.001, 0.0015, 0.002, 0.003]:
+                for mom_scale in [0.0005, 0.001, 0.0015, 0.002]:
+                    preds = -features[:, mr_idx] * mr_scale + features[:, mom_idx] * mom_scale
+                    sharpe, max_dd, n_trades = _quick_backtest(preds, close)
+                    if n_trades >= 30:
+                        score = sharpe * min(1.0, 0.25 / max(abs(max_dd), 0.01))
+                        candidates.append((score, -(mr_idx * 10 + mom_idx), -1, mr_scale, mom_scale))
 
     # Sort and pick the best
     candidates.sort(reverse=True)
