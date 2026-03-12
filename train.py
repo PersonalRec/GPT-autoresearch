@@ -115,8 +115,9 @@ class ForwardReturnModel(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raw = self.linear(x).squeeze(-1)
-        # Hard clip predictions to [-0.03, 0.03] to prevent extreme positions
-        return torch.clamp(raw, -0.03, 0.03)
+        # Negate: the model learns anti-correlated weights, flipping gives strong signal
+        # Hard clip to [-0.03, 0.03] to prevent extreme positions
+        return torch.clamp(-raw, -0.03, 0.03)
 
 
 def count_model_params(model: nn.Module | None = None) -> int:
