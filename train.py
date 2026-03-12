@@ -316,20 +316,33 @@ def main():
                                 score = sharpe * min(1.0, 0.25 / max(abs(max_dd), 0.01))
                                 candidates.append((score, -(i * 10 + j), si, sc_i, sj * sc_j))
 
-    # Phase 3b: Mean-reversion + momentum bias combinations
-    # short MR + long momentum (e.g., -4h + +168h)
-    print("Phase 3b: MR+momentum bias combos...")
-    for mr_idx in [1, 2, 3, 4]:  # short/medium term MR
-        for mom_idx in [4, 5]:  # long term momentum
+    # Phase 3b: Explicit MR+momentum and pure momentum strategies
+    print("Phase 3b: MR+momentum and pure momentum combos...")
+    for mr_idx in [1, 2, 3, 4]:
+        for mom_idx in [4, 5]:
             if mr_idx == mom_idx:
                 continue
             for mr_scale in [0.001, 0.0015, 0.002, 0.003]:
-                for mom_scale in [0.0005, 0.001, 0.0015, 0.002]:
+                for mom_scale in [0.0005, 0.001, 0.0015, 0.002, 0.003]:
                     preds = -features[:, mr_idx] * mr_scale + features[:, mom_idx] * mom_scale
                     sharpe, max_dd, n_trades = _quick_backtest(preds, close)
                     if n_trades >= 30:
                         score = sharpe * min(1.0, 0.25 / max(abs(max_dd), 0.01))
                         candidates.append((score, -(mr_idx * 10 + mom_idx), -1, mr_scale, mom_scale))
+
+    # Phase 3c: RSI-based and volatility-based signals
+    print("Phase 3c: RSI and vol-based signals...")
+    # RSI features are at indices 12 (RSI-14) and 13 (RSI-48)
+    # They're normalized to [0,1] then z-scored. RSI > 0.7 = overbought (sell), < 0.3 = oversold (buy)
+    # So mean-reversion on RSI: negative weight (high RSI → go short)
+    for rsi_idx in [12, 13]:
+        for scale in [0.001, 0.002, 0.003, 0.005, 0.008]:
+            for sign in [-1, +1]:
+                preds = sign * features[:, rsi_idx] * scale
+                sharpe, max_dd, n_trades = _quick_backtest(preds, close)
+                if n_trades >= 30:
+                    score = sharpe * min(1.0, 0.25 / max(abs(max_dd), 0.01))
+                    candidates.append((score, rsi_idx, sign, scale, 3.0))
 
     # Sort and pick the best
     candidates.sort(reverse=True)
