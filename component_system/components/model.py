@@ -13,11 +13,17 @@ from prepare import MAX_SEQ_LEN
 def _get_fa3():
     if torch.cuda.is_available():
         cap = torch.cuda.get_device_capability()
-        repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
+        repo = (
+            "varunneal/flash-attention-3"
+            if cap == (9, 0)
+            else "kernels-community/flash-attn3"
+        )
         return get_kernel(repo).flash_attn_interface
     return None
 
+
 _fa3 = None
+
 
 def get_fa3():
     global _fa3
@@ -45,7 +51,9 @@ def has_ve(layer_idx: int, n_layer: int) -> bool:
     return layer_idx % 2 == (n_layer - 1) % 2
 
 
-def apply_rotary_emb(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+def apply_rotary_emb(
+    x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
+) -> torch.Tensor:
     assert x.ndim == 4
     d = x.shape[3] // 2
     x1, x2 = x[..., :d], x[..., d:]
@@ -98,7 +106,9 @@ class CausalSelfAttention(nn.Module):
 
         fa3 = get_fa3()
         if fa3 is None:
-            raise RuntimeError("Flash Attention 3 is unavailable; component_system model should match train.py and requires the same kernel path.")
+            raise RuntimeError(
+                "Flash Attention 3 is unavailable; component_system model should match train.py and requires the same kernel path."
+            )
         y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
         y = y.contiguous().view(batch_size, seq_len, -1)
         return self.c_proj(y)
@@ -107,13 +117,19 @@ class CausalSelfAttention(nn.Module):
 class MLP(nn.Module):
     def __init__(self, config: GPTConfig) -> None:
         super().__init__()
-        self.c_fc = nn.Linear(config.n_embd, 4 * config.n_embd, bias=False)
-        self.c_proj = nn.Linear(4 * config.n_embd, config.n_embd, bias=False)
+        # SwiGLU: 2/3 * 4x = ~2.67x expansion for comparable parameters to ReLU^2
+        hidden_dim = int(4 * config.n_embd * 2 / 3)
+        hidden_dim = ((hidden_dim + 127) // 128) * 128  # Round to multiple of 128
+        self.gate_proj = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.up_proj = nn.Linear(config.n_embd, hidden_dim, bias=False)
+        self.down_proj = nn.Linear(hidden_dim, config.n_embd, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.c_fc(x)
-        x = F.relu(x).square()
-        x = self.c_proj(x)
+        # SwiGLU: gate * SiLU(up_proj)
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        x = gate * F.silu(up)
+        x = self.down_proj(x)
         return x
 
 
@@ -174,8 +190,9 @@ class GPT(nn.Module):
             torch.nn.init.uniform_(block.attn.c_k.weight, -scale, scale)
             torch.nn.init.uniform_(block.attn.c_v.weight, -scale, scale)
             torch.nn.init.zeros_(block.attn.c_proj.weight)
-            torch.nn.init.uniform_(block.mlp.c_fc.weight, -scale, scale)
-            torch.nn.init.zeros_(block.mlp.c_proj.weight)
+            torch.nn.init.uniform_(block.mlp.gate_proj.weight, -scale, scale)
+            torch.nn.init.uniform_(block.mlp.up_proj.weight, -scale, scale)
+            torch.nn.init.zeros_(block.mlp.down_proj.weight)
         self.resid_lambdas.fill_(1.0)
         self.x0_lambdas.fill_(0.1)
         for ve in self.value_embeds.values():
@@ -285,11 +302,46 @@ class GPT(nn.Module):
         dmodel_lr_scale = (model_dim / 768) ** -0.5
         print(f"Scaling AdamW LRs by 1/sqrt({model_dim}/768) = {dmodel_lr_scale:.6f}")
         param_groups = [
-            dict(kind="adamw", params=lm_head_params, lr=unembedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0),
-            dict(kind="adamw", params=embedding_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0),
-            dict(kind="adamw", params=value_embeds_params, lr=embedding_lr * dmodel_lr_scale, betas=adam_betas, eps=1e-10, weight_decay=0.0),
-            dict(kind="adamw", params=resid_params, lr=scalar_lr * 0.01, betas=adam_betas, eps=1e-10, weight_decay=0.0),
-            dict(kind="adamw", params=x0_params, lr=scalar_lr, betas=(0.96, 0.95), eps=1e-10, weight_decay=0.0),
+            dict(
+                kind="adamw",
+                params=lm_head_params,
+                lr=unembedding_lr * dmodel_lr_scale,
+                betas=adam_betas,
+                eps=1e-10,
+                weight_decay=0.0,
+            ),
+            dict(
+                kind="adamw",
+                params=embedding_params,
+                lr=embedding_lr * dmodel_lr_scale,
+                betas=adam_betas,
+                eps=1e-10,
+                weight_decay=0.0,
+            ),
+            dict(
+                kind="adamw",
+                params=value_embeds_params,
+                lr=embedding_lr * dmodel_lr_scale,
+                betas=adam_betas,
+                eps=1e-10,
+                weight_decay=0.0,
+            ),
+            dict(
+                kind="adamw",
+                params=resid_params,
+                lr=scalar_lr * 0.01,
+                betas=adam_betas,
+                eps=1e-10,
+                weight_decay=0.0,
+            ),
+            dict(
+                kind="adamw",
+                params=x0_params,
+                lr=scalar_lr,
+                betas=(0.96, 0.95),
+                eps=1e-10,
+                weight_decay=0.0,
+            ),
         ]
         for shape in sorted({p.shape for p in matrix_params}):
             group_params = [p for p in matrix_params if p.shape == shape]
@@ -323,7 +375,11 @@ class GPT(nn.Module):
         x0 = x
         for layer_idx, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[layer_idx] * x + self.x0_lambdas[layer_idx] * x0
-            ve = self.value_embeds[str(layer_idx)](idx) if str(layer_idx) in self.value_embeds else None
+            ve = (
+                self.value_embeds[str(layer_idx)](idx)
+                if str(layer_idx) in self.value_embeds
+                else None
+            )
             x = block(x, ve, cos_sin, self.window_sizes[layer_idx])
         x = norm(x)
         logits = self.lm_head(x).float()
