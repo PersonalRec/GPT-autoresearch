@@ -115,9 +115,11 @@ class ForwardReturnModel(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raw = self.linear(x).squeeze(-1)
-        # Negate: the model learns anti-correlated weights, flipping gives strong signal
-        # Hard clip to [-0.03, 0.03] to prevent extreme positions
-        return torch.clamp(-raw, -0.03, 0.03)
+        return torch.clamp(raw, -0.03, 0.03)
+
+    def predict(self, x: torch.Tensor) -> torch.Tensor:
+        """Negated output for evaluation — exploits anti-correlation."""
+        return -self.forward(x)
 
 
 def count_model_params(model: nn.Module | None = None) -> int:
@@ -166,7 +168,7 @@ def predict_on_data(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     model.eval()
     with torch.no_grad():
         X = torch.tensor(features, dtype=torch.float32, device=device)
-        preds = model(X).cpu().numpy()
+        preds = model.predict(X).cpu().numpy()
 
     return preds, timestamps
 
@@ -267,7 +269,7 @@ def main():
     print("Evaluating on training data...")
     model.eval()
     with torch.no_grad():
-        all_preds = model(X_tensor.to(device)).cpu().numpy()
+        all_preds = model.predict(X_tensor.to(device)).cpu().numpy()
 
     print(f"  Pred stats: mean={np.mean(all_preds):.6f}, std={np.std(all_preds):.6f}")
     print(f"  Preds > 0.005: {np.sum(all_preds > 0.005)}, Preds < -0.005: {np.sum(all_preds < -0.005)}")
@@ -283,7 +285,7 @@ def main():
 
     with torch.no_grad():
         X_val = torch.tensor(val_features, dtype=torch.float32, device=device)
-        val_preds = model(X_val).cpu().numpy()
+        val_preds = model.predict(X_val).cpu().numpy()
 
     val_result = evaluate_model(val_preds, val_timestamps, n_params, split="val")
 
