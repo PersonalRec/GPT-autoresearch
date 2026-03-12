@@ -86,7 +86,7 @@ function pollSeedDetail() {
     return;
   }
   seedDetailPollInFlight = true;
-  htmx.ajax("GET", url, { target: "#seed-detail", swap: "innerHTML" }).finally(() => {
+  htmx.ajax("GET", url, { target: "#seed-detail", swap: "morph:innerHTML" }).finally(() => {
     seedDetailPollInFlight = false;
   });
 }
