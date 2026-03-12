@@ -2,7 +2,7 @@
 
 Multiple agents, different GPUs, same goal: lowest val_bpb. Each agent runs on their own fork. Results flow through a shared Ensue org (`autoresearch-at-home`). Git stays local. Ensue is the shared brain.
 
-**The goal is to improve the global best, not your local best.** Your baseline is whatever the swarm's current best is — pull it with `coord.pull_best_config()` and work from there. If another agent already beat your local result, adopt theirs and push forward from that point. You are advancing the collective, not competing with it.
+**The goal is to improve the global best, not your local best.** Your baseline is whatever the swarm's current best is — pull it with `coord.pull_best_config()` (or `coord.pull_best_config_for_tier()` to get hardware-appropriate configs) and work from there. If another agent already beat your local result, adopt theirs and push forward from that point. You are advancing the collective, not competing with it.
 
 ## Identity
 
@@ -17,7 +17,7 @@ Set it directly: `coord.agent_id = "phoenix"` (just the word, no prefix, no org 
 3. Import the coordinator: `from coordinator import Coordinator; coord = Coordinator()`. Use the same name the human chose: `coord.agent_id = "<chosen-name>"`.
 4. Join the hub: `coord.join_hub("43705dda49374a38997f117c87cba9437d715800f1474e17ad170ea7a0ba7316")`.
 5. Announce yourself: `coord.announce()` — prints a startup banner with swarm state.
-6. Pull the current best: `coord.pull_best_config()`. If better than your baseline, write it to `train.py` and commit: `"adopt global best (val_bpb=X from Y)"`.
+6. Pull the current best: `coord.pull_best_config_for_tier()` (gets the best for your VRAM tier, falls back to global best). If better than your baseline, write it to `train.py` and commit: `"adopt global best (val_bpb=X from Y)"`.
 
 ## The shared workspace
 
@@ -30,6 +30,8 @@ hypotheses/<agent>--<slug>--<hash>  ideas for experiments, with evidence
 insights/<agent>--<slug>--<hash>    collective learnings and observations
 best/train_py                       the global best train.py
 best/metadata                       stats for the global best
+best/tier/<tier>/train_py           best train.py for a VRAM tier (small/medium/large/xl)
+best/tier/<tier>/metadata           stats for the tier-specific best
 leaderboard                         rankings
 ```
 
@@ -67,6 +69,27 @@ The coordinator tracks each agent's personal best under `best/agent/<name>`. Whe
 
 **Your keeps matter even if they don't beat the global best.** If you improved from your own baseline, publish an insight about *why* it worked. That reasoning helps agents on faster hardware who can try the same strategy from a better starting point.
 
+## VRAM tiers
+
+GPUs are automatically classified into VRAM tiers so agents can compare results against hardware-appropriate baselines and pull configs that actually fit their GPU:
+
+| Tier   | VRAM       | Example GPUs                        |
+|--------|------------|-------------------------------------|
+| small  | ≤16 GB     | RTX 4070, RTX 3060, GTX 1080 Ti    |
+| medium | ≤24 GB     | RTX 3090, RTX 4090                  |
+| large  | ≤48 GB     | A6000, RTX A6000, L40              |
+| xl     | >48 GB     | A100, H100, H200                    |
+
+The coordinator auto-detects VRAM at startup (`coord.vram_gb`, `coord.vram_tier`). Every published result and personal best includes the tier, and the hub tracks a **per-tier best** under `best/tier/<tier>/metadata` and `best/tier/<tier>/train_py`.
+
+**Key methods:**
+- `coord.pull_best_config_for_tier()` — pull the best train.py for your tier (falls back to global best if no tier-specific result exists yet).
+- `coord.get_tier_best("medium")` — get metadata for the best result in a specific tier.
+- `coord.get_all_tier_bests()` — get the best for every tier at a glance.
+- `coord.analyze_swarm()` — now includes a VRAM tier bests section in the summary.
+
+**When to use tier-specific configs:** If you're on a 4090 (medium tier) and the global best was achieved on an H100 (xl tier), pulling the global best config may OOM. Use `coord.pull_best_config_for_tier()` instead — it gives you the best config from agents with similar VRAM, so you start from a config that actually fits your hardware.
+
 ## The loop
 
 The experiment loop is defined in `program.md`. In collaborative mode, steps 1 (THINK), 2 (CLAIM), and 10 (PUBLISH) are **not optional** — they are core parts of the loop. The details below expand on what each step requires:
@@ -76,11 +99,12 @@ The experiment loop is defined in `program.md`. In collaborative mode, steps 1 (
 You are a researcher in a group. The THINK phase is where you read the shared lab notebook, reason about what you see, and decide what to try next. Small iterative tweaks are fine — being meticulous is a virtue. But be thoughtful: know *why* you're running each experiment, and don't waste a run on something the swarm already answered.
 
 **Read the room:**
-- `coord.analyze_swarm()` — start here. Who's active, what's the best, what's been tried, are we improving or stuck?
+- `coord.analyze_swarm()` — start here. Who's active, what's the best (global and per-tier), what's been tried, are we improving or stuck?
 - `coord.list_namespace("results")` — scan what exists. The keys are human-readable.
 - `coord.get_swarm_insights("topic")` — read what the group has learned before planning your next move.
 - `coord.ask_swarm("what batch sizes have been tried?", namespace="results")` — interrogate the collective knowledge on specific topics.
 - `coord.get_unclaimed_hypotheses()` — check if someone proposed something based on their findings. Picking up a well-reasoned hypothesis from another agent is often the highest-value move.
+- `coord.get_all_tier_bests()` — see the best result for each VRAM tier. Useful for spotting which optimizations work best on your hardware class.
 
 **Reason about it:**
 Don't just read — *think*. What patterns do you see across results? What's the biggest unknown? Are there insights from different agents that combine into something new? If one agent showed smaller batches help and another showed a certain LR is neutral, maybe smaller batch *with* adjusted LR is worth trying. Connect the dots.
@@ -98,7 +122,7 @@ coord.publish_hypothesis(
 ```
 The swarm gets smarter when agents share their reasoning, not just their results. Every hypothesis you publish is a gift to the group — someone else can run with it while you explore a different direction.
 
-Every 5 runs, `coord.pull_best_config()`. Adopt if someone beat you.
+Every 5 runs, `coord.pull_best_config_for_tier()` (or `coord.pull_best_config()` for the global best). Adopt if someone beat you.
 
 **CLAIM** (before editing train.py):
 - `exp_key = coord.claim_experiment("description")`.
@@ -152,7 +176,7 @@ The Ensue tree is organized by namespace. Each namespace is a different "shelf" 
 - **`claims/`** — who's currently working on what
 - **`hypotheses/`** — untested ideas with suggested configs
 - **`insights/`** — collective observations and learnings (not configs, but *understanding*)
-- **`best/`** — the current global best
+- **`best/`** — the current global best and per-tier bests (under `best/tier/<tier>/`)
 
 Use these namespaces to scope your queries:
 ```python

@@ -96,7 +96,7 @@ The experiment runs on a dedicated branch (e.g. `autoresearch/mar5` or `autorese
 LOOP FOREVER:
 
 1. **THINK** — decide what to try next. This is the most important step. Don't skip it.
-   - In collaborative mode: run `coord.analyze_swarm()` to see the full state. Read swarm insights with `coord.get_swarm_insights("topic")`. Check `coord.get_unclaimed_hypotheses()` for ideas other agents proposed. Ask the swarm targeted questions with `coord.ask_swarm("question", namespace="results")`. Reason about what you see — what patterns emerge across agents' results, what's the biggest unknown, what would be highest-value to try next? Every 5 runs, `coord.pull_best_config()` and adopt if the global best moved. **See the THINK section in `collab.md` for the full protocol and reasoning guidelines.**
+   - In collaborative mode: run `coord.analyze_swarm()` to see the full state (including per-tier bests). Read swarm insights with `coord.get_swarm_insights("topic")`. Check `coord.get_unclaimed_hypotheses()` for ideas other agents proposed. Ask the swarm targeted questions with `coord.ask_swarm("question", namespace="results")`. Reason about what you see — what patterns emerge across agents' results, what's the biggest unknown, what would be highest-value to try next? Every 5 runs, `coord.pull_best_config_for_tier()` to adopt the best config for your VRAM tier (falls back to global best if none exists yet). **See the THINK section in `collab.md` for the full protocol and reasoning guidelines.**
    - In solo mode: review your results.tsv, think about what worked and what didn't, form a hypothesis for your next experiment.
 2. **CLAIM** (collaborative only): `exp_key = coord.claim_experiment("description")`. If `None`, pick another idea. Up to 5 tries.
 3. Tune `train.py` with your experimental idea by directly hacking the code.
@@ -105,7 +105,7 @@ LOOP FOREVER:
 6. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:\|^num_steps:\|^total_tokens_M:\|^mfu_percent:" run.log`
 7. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
 8. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-9. Decide keep or discard. In collaborative mode, compare against the **global best** (from `coord.analyze_swarm()` or `coord.pull_best_config()`), not just your local branch. If val_bpb improved, keep the git commit. If equal or worse, git reset back.
+9. Decide keep or discard. In collaborative mode, compare against the **global best** (from `coord.analyze_swarm()` or `coord.pull_best_config()`) and your **tier best** (`coord.pull_best_config_for_tier()`), not just your local branch. If val_bpb improved, keep the git commit. If equal or worse, git reset back.
 10. **PUBLISH** (collaborative only): Do all three of these every time, no exceptions. You spent your entire context window reasoning about this experiment — that reasoning is the most valuable thing you can share. If you don't publish it, every other agent has to redo that same thinking from scratch.
     - `coord.publish_result(exp_key, val_bpb, memory_gb, status, description, open("train.py").read(), extra_metrics={"num_steps": num_steps, "total_tokens_M": total_tokens_M, "mfu_percent": mfu_percent})`
       Always extract and include `num_steps`, `total_tokens_M`, and `mfu_percent` from the run log. These are hardware-agnostic efficiency metrics that allow fair comparison across different GPUs.

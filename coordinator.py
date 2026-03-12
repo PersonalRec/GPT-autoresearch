@@ -40,6 +40,20 @@ SEMANTIC_THRESHOLD = 0.92    # block if active claim is this similar
 MAX_CLAIM_ATTEMPTS = 5       # alternatives before giving up
 SYNC_EVERY_N = 5             # pull global best every N experiments
 
+# VRAM tier boundaries (upper bounds in GB, inclusive)
+VRAM_TIERS: dict[str, int] = {
+    "small": 16,     # ≤16 GB  (e.g. RTX 4070, RTX 3060, GTX 1080 Ti)
+    "medium": 24,    # ≤24 GB  (e.g. RTX 3090, RTX 4090)
+    "large": 48,     # ≤48 GB  (e.g. A6000, RTX A6000, L40)
+    "xl": 0,         # >48 GB  (e.g. A100, H100, H200) — 0 means no upper bound
+}
+# Sorted thresholds for tier classification (ascending)
+_TIER_THRESHOLDS: list[tuple[str, int]] = [
+    ("small", 16),
+    ("medium", 24),
+    ("large", 48),
+]
+
 # ---------------------------------------------------------------------------
 # Base JSON-RPC
 # ---------------------------------------------------------------------------
@@ -97,6 +111,25 @@ def ensue_rpc(api_key: str, tool_name: str, arguments: dict[str, Any]) -> dict[s
 def _experiment_hash(description: str) -> str:
     """Hash an experiment description for dedup keying."""
     return hashlib.sha256(description.lower().strip().encode()).hexdigest()[:12]
+
+
+def detect_vram_gb() -> Optional[float]:
+    """Detect total VRAM of the current CUDA device in GB. Returns None if unavailable."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+    except Exception:
+        pass
+    return None
+
+
+def get_vram_tier(vram_gb: float) -> str:
+    """Classify a VRAM size (in GB) into a tier name."""
+    for tier_name, threshold in _TIER_THRESHOLDS:
+        if vram_gb <= threshold:
+            return tier_name
+    return "xl"
 
 
 def _slugify(text: str, max_len: int = 40) -> str:
@@ -175,6 +208,9 @@ class Coordinator:
         self.api_key = api_key or _get_api_key()
         self.agent_id: Optional[str] = None
         self.experiment_count = 0
+        # Auto-detect GPU VRAM and classify into a tier
+        self.vram_gb: Optional[float] = detect_vram_gb()
+        self.vram_tier: Optional[str] = get_vram_tier(self.vram_gb) if self.vram_gb is not None else None
 
     def _log(self, msg: str) -> None:
         """Print with agent identity prefix."""
@@ -245,10 +281,16 @@ class Coordinator:
             })
             active_claims = len(claim_list.get("keys", []))
 
+            # VRAM tier info
+            vram_line = "unknown"
+            if self.vram_gb is not None:
+                vram_line = f"{self.vram_gb:.1f} GB ({self.vram_tier})"
+
             banner = f"""
 {'=' * 54}
   AUTORESEARCH AGENT: {tag}
   Swarm: {HUB_ORG}
+  VRAM: {vram_line}
   Global best: {best_line}
   Experiments completed: {total}
   Active claims: {active_claims}
@@ -418,6 +460,8 @@ class Coordinator:
                 "agent_id": self.agent_id or "unknown",
                 "val_bpb": val_bpb,
                 "memory_gb": memory_gb,
+                "vram_tier": self.vram_tier,
+                "vram_total_gb": round(self.vram_gb, 1) if self.vram_gb is not None else None,
                 "status": status,
                 "commit": commit,
                 "description": description,
@@ -461,6 +505,8 @@ class Coordinator:
             if status == "keep":
                 self._update_agent_best(val_bpb, result_data)
                 self.maybe_update_best(val_bpb, result_data, train_py_source)
+                if self.vram_tier:
+                    self._update_tier_best(val_bpb, result_data, train_py_source)
 
         except Exception as e:
             self._log(f"publish_result error: {e}")
@@ -507,6 +553,8 @@ class Coordinator:
                 "val_bpb": val_bpb,
                 "description": result_data.get("description"),
                 "memory_gb": result_data.get("memory_gb"),
+                "vram_tier": self.vram_tier,
+                "vram_total_gb": round(self.vram_gb, 1) if self.vram_gb is not None else None,
                 "achieved_at": _now_iso(),
                 "previous_best_val_bpb": current,
             }
@@ -563,6 +611,147 @@ class Coordinator:
         except Exception as e:
             self._log(f"get_all_agent_bests error: {e}")
             return []
+
+    # --- VRAM Tier Bests ---
+
+    def _get_tier_best_bpb(self, tier: str) -> Optional[float]:
+        """Read the current best val_bpb for a VRAM tier. Returns None if unavailable."""
+        try:
+            key = f"@{HUB_ORG}/best/tier/{tier}/metadata"
+            result = self._rpc("get_memory", {"key_names": [key]})
+            results = result.get("results", [])
+            if results and results[0].get("status") == "success":
+                data = json.loads(results[0].get("value", "{}"))
+                return data.get("val_bpb")
+        except Exception:
+            pass
+        return None
+
+    def _update_tier_best(self, val_bpb: float, result_data: dict, train_py_source: str) -> bool:
+        """Update the best config for this agent's VRAM tier if the result beats it. Returns True if updated."""
+        tier = self.vram_tier
+        if not tier:
+            return False
+        try:
+            # Sanity: same rules as global best
+            if val_bpb <= 0 or val_bpb < 0.5:
+                return False
+
+            meta_key = f"@{HUB_ORG}/best/tier/{tier}/metadata"
+            code_key = f"@{HUB_ORG}/best/tier/{tier}/train_py"
+
+            current_bpb = self._get_tier_best_bpb(tier)
+            if current_bpb is not None and val_bpb >= current_bpb:
+                return False  # not better
+
+            previous_best_bpb = current_bpb
+            previous_best_by = None
+            if current_bpb is not None:
+                # Read full metadata for previous best info
+                meta = self._rpc("get_memory", {"key_names": [meta_key]})
+                meta_results = meta.get("results", [])
+                if meta_results and meta_results[0].get("status") == "success":
+                    prev = json.loads(meta_results[0].get("value", "{}"))
+                    previous_best_by = prev.get("agent_id")
+
+            tier_data = {
+                **{k: v for k, v in result_data.items() if k != "train_py"},
+                "vram_tier": tier,
+                "best_val_bpb": val_bpb,
+                "achieved_by": self.agent_id or "unknown",
+                "achieved_at": _now_iso(),
+                "previous_best_val_bpb": previous_best_bpb,
+                "previous_best_by": previous_best_by,
+            }
+
+            # Upsert tier train_py
+            code_b64 = base64.b64encode(train_py_source.encode()).decode()
+            try:
+                self._rpc("update_memory", {
+                    "key_name": code_key,
+                    "value": code_b64,
+                    "base64": True,
+                })
+            except Exception:
+                self._rpc("create_memory", {"items": [{
+                    "key_name": code_key,
+                    "description": f"[autoresearch] Best train.py for VRAM tier '{tier}'",
+                    "value": code_b64,
+                    "base64": True,
+                }]})
+
+            # Upsert tier metadata
+            meta_b64 = base64.b64encode(json.dumps(tier_data).encode()).decode()
+            try:
+                self._rpc("update_memory", {
+                    "key_name": meta_key,
+                    "value": meta_b64,
+                    "base64": True,
+                })
+            except Exception:
+                self._rpc("create_memory", {"items": [{
+                    "key_name": meta_key,
+                    "description": f"[autoresearch] Metadata for best train.py in VRAM tier '{tier}'",
+                    "value": meta_b64,
+                    "base64": True,
+                }]})
+
+            improvement = (previous_best_bpb - val_bpb) if previous_best_bpb else 0
+            self._log(f"NEW TIER BEST ({tier})! val_bpb={val_bpb:.6f} (improved {improvement:.4f})")
+            return True
+
+        except Exception as e:
+            self._log(f"_update_tier_best error: {e}")
+            return False
+
+    def get_tier_best(self, tier: str) -> Optional[dict]:
+        """Get the best result metadata for a specific VRAM tier."""
+        try:
+            key = f"@{HUB_ORG}/best/tier/{tier}/metadata"
+            result = self._rpc("get_memory", {"key_names": [key]})
+            results = result.get("results", [])
+            if results and results[0].get("status") == "success":
+                return json.loads(results[0].get("value", "{}"))
+        except Exception as e:
+            self._log(f"get_tier_best error: {e}")
+        return None
+
+    def get_all_tier_bests(self) -> dict[str, Optional[dict]]:
+        """Get the best result for every VRAM tier. Returns {tier_name: metadata_dict_or_None}."""
+        tier_bests: dict[str, Optional[dict]] = {}
+        for tier_name in VRAM_TIERS:
+            tier_bests[tier_name] = self.get_tier_best(tier_name)
+        return tier_bests
+
+    def pull_best_config_for_tier(self, tier: Optional[str] = None) -> Optional[tuple[str, dict]]:
+        """
+        Pull the best train.py and metadata for the given VRAM tier.
+        Falls back to the global best if no tier-specific best exists.
+        If tier is None, uses this agent's auto-detected tier.
+        Returns (source_code, metadata_dict) or None.
+        """
+        tier = tier or self.vram_tier
+        if tier:
+            try:
+                meta_key = f"@{HUB_ORG}/best/tier/{tier}/metadata"
+                code_key = f"@{HUB_ORG}/best/tier/{tier}/train_py"
+
+                meta = self._rpc("get_memory", {"key_names": [meta_key]})
+                meta_results = meta.get("results", [])
+                if meta_results and meta_results[0].get("status") == "success":
+                    code = self._rpc("get_memory", {"key_names": [code_key]})
+                    code_results = code.get("results", [])
+                    if code_results and code_results[0].get("status") == "success":
+                        metadata = json.loads(meta_results[0]["value"])
+                        source = code_results[0]["value"]
+                        self._log(f"Pulled tier '{tier}' best: val_bpb={metadata.get('val_bpb', '?')} (by {metadata.get('agent_id', '?')})")
+                        return source, metadata
+                self._log(f"No tier-specific best for '{tier}', falling back to global best")
+            except Exception as e:
+                self._log(f"pull_best_config_for_tier error (falling back to global): {e}")
+
+        # Fall back to global best
+        return self.pull_best_config()
 
     def maybe_update_best(
         self,
@@ -904,7 +1093,22 @@ class Coordinator:
             for ab in agent_bests:
                 prev = ab.get("previous_best_val_bpb")
                 improvement = f" (improved {prev - ab['val_bpb']:.4f} from {prev:.6f})" if prev else ""
-                lines.append(f"  [{ab.get('agent_id', '?')}] val_bpb={ab.get('val_bpb', 0):.6f}{improvement} — {ab.get('description', '?')}")
+                tier_tag = f" [{ab.get('vram_tier', '?')}]" if ab.get("vram_tier") else ""
+                lines.append(f"  [{ab.get('agent_id', '?')}]{tier_tag} val_bpb={ab.get('val_bpb', 0):.6f}{improvement} — {ab.get('description', '?')}")
+
+            # Per-tier bests
+            tier_bests = self.get_all_tier_bests()
+            has_tier_data = any(v is not None for v in tier_bests.values())
+
+            if has_tier_data:
+                lines.append(f"\nVRAM tier bests:")
+                for tier_name, tb in tier_bests.items():
+                    bound = VRAM_TIERS[tier_name]
+                    label = f"≤{bound}GB" if bound else ">48GB"
+                    if tb:
+                        lines.append(f"  {tier_name} ({label}): val_bpb={tb.get('val_bpb', 0):.6f} by {tb.get('agent_id', '?')} — {tb.get('description', '?')}")
+                    else:
+                        lines.append(f"  {tier_name} ({label}): no results yet")
 
             lines.append(f"\nTrend: {trend}")
             lines.append("=" * 50)
@@ -916,6 +1120,7 @@ class Coordinator:
                 "active_claims": active_claims,
                 "unclaimed_hypotheses": unclaimed,
                 "agent_bests": agent_bests,
+                "tier_bests": tier_bests,
                 "improvement_trend": trend,
                 "summary": "\n".join(lines),
             }
@@ -925,7 +1130,7 @@ class Coordinator:
             return {
                 "global_best": None, "recent_keeps": [], "recent_failures": [],
                 "active_claims": [], "unclaimed_hypotheses": [], "agent_bests": [],
-                "improvement_trend": "unknown", "summary": f"Error: {e}",
+                "tier_bests": {}, "improvement_trend": "unknown", "summary": f"Error: {e}",
             }
 
     def post_insight(self, insight: str, evidence_keys: list[str] = None) -> None:
