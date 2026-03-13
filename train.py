@@ -174,9 +174,12 @@ def _apply_regime_filter(preds: np.ndarray, df: pd.DataFrame) -> np.ndarray:
     close = df["close"].values.astype(np.float64)
     vol = compute_vol_168(df)
 
-    # Vol dampening
+    # Vol dampening — only kick in when vol > 1.5x median
+    vol_threshold = _vol_median * 1.5
     vol_safe = np.maximum(vol[:len(preds)], 1e-8)
-    scale = _vol_median / np.maximum(vol_safe, _vol_median)
+    scale = np.where(vol_safe > vol_threshold,
+                     vol_threshold / vol_safe,
+                     1.0)
     preds = preds * scale
 
     # Crash regime filter: if 168h return is very negative, prevent longs
@@ -250,12 +253,12 @@ def main():
     train_start = time.time()
 
     model = GradientBoostingRegressor(
-        n_estimators=200,
-        max_depth=2,
+        n_estimators=300,
+        max_depth=3,
         learning_rate=0.01,
-        subsample=0.6,
-        min_samples_leaf=200,
-        max_features=0.7,
+        subsample=0.7,
+        min_samples_leaf=100,
+        max_features=0.8,
         loss="huber",
         alpha=0.9,
     )
