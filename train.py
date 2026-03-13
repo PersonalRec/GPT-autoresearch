@@ -37,8 +37,8 @@ y_val = val_df[TARGET]
 # ---------------------------------------------------------------------------
 
 model = xgb.XGBRegressor(
-    n_estimators=500,
-    learning_rate=0.05,
+    n_estimators=1000,
+    learning_rate=0.02,
     max_depth=6,
     subsample=0.8,
     colsample_bytree=0.8,
