@@ -103,9 +103,23 @@ def compute_features(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     feature_cols.append(hl_range_24)
 
     # 7. Hour of day (cyclical)
-    hours = pd.to_datetime(ts).hour
+    dt = pd.to_datetime(ts)
+    hours = dt.hour
     feature_cols.append(np.sin(2 * np.pi * hours / 24))
     feature_cols.append(np.cos(2 * np.pi * hours / 24))
+
+    # 8. Day of week (cyclical) — crypto has weekly patterns
+    dow = dt.dayofweek
+    feature_cols.append(np.sin(2 * np.pi * dow / 7))
+    feature_cols.append(np.cos(2 * np.pi * dow / 7))
+
+    # 9. Momentum acceleration: 24h return - 72h return (trend strengthening?)
+    ret_24 = np.full(len(close), np.nan)
+    ret_24[24:] = close[24:] / close[:-24] - 1.0
+    ret_72 = np.full(len(close), np.nan)
+    ret_72[72:] = close[72:] / close[:-72] - 1.0
+    accel = ret_24 - ret_72 / 3  # normalize 72h to per-24h scale
+    feature_cols.append(accel)
 
     features = np.column_stack(feature_cols)
 
