@@ -183,7 +183,7 @@ def _apply_regime_filter(preds: np.ndarray, df: pd.DataFrame) -> np.ndarray:
     ret_168 = np.full(len(close), 0.0)
     ret_168[168:] = close[168:] / close[:-168] - 1.0
     ret_168 = ret_168[MAX_LOOKBACK:][:len(preds)]
-    crash_mask = ret_168 < -0.15
+    crash_mask = ret_168 < -0.10
     preds[crash_mask] = 0.0  # flat during crash
 
     return preds
