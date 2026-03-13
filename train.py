@@ -231,10 +231,9 @@ def main():
     targets = targets[valid]
     train_timestamps = timestamps[valid]
 
-    # No normalization for GBR (trees are invariant to monotone transforms)
+    # Normalize features (for consistent train/val distributions)
+    features = _normalize(features, fit=True)
     features = np.nan_to_num(features, nan=0.0)
-    # Store normalization stats for holdout prediction (which still needs them)
-    _normalize(features, fit=True)
 
     print(f"  Training samples: {len(features)}, Features: {features.shape[1]}")
 
