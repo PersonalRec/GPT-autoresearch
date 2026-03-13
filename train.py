@@ -29,6 +29,15 @@ ZSCORE_WINDOWS = [24, 72, 168]
 MAX_LOOKBACK = 168  # maximum lookback window (1 week)
 
 
+def compute_vol_168(df: pd.DataFrame) -> np.ndarray:
+    """Compute 168h rolling volatility (trimmed to valid start)."""
+    close = df["close"].values.astype(np.float64)
+    hourly_returns = np.zeros(len(close))
+    hourly_returns[1:] = close[1:] / close[:-1] - 1.0
+    vol = pd.Series(hourly_returns).rolling(168, min_periods=168).std().values
+    return vol[MAX_LOOKBACK:]
+
+
 def compute_features(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """Compute features from OHLCV data.
 
@@ -139,6 +148,7 @@ def count_model_params(model=None) -> int:
 
 _feat_mean: np.ndarray | None = None
 _feat_std: np.ndarray | None = None
+_vol_median: float = 0.01  # median 168h volatility from training
 
 
 def _normalize(features: np.ndarray, fit: bool = False) -> np.ndarray:
@@ -155,9 +165,18 @@ def _normalize(features: np.ndarray, fit: bool = False) -> np.ndarray:
 # Prediction helper (used by prepare.py --evaluate-holdout)
 # ---------------------------------------------------------------------------
 
+def _vol_dampen(preds: np.ndarray, vol: np.ndarray) -> np.ndarray:
+    """Dampen predictions when volatility is high."""
+    # Scale factor: 1.0 at median vol, drops toward 0 at high vol
+    vol_safe = np.maximum(vol, 1e-8)
+    scale = _vol_median / np.maximum(vol_safe, _vol_median)
+    return preds * scale
+
+
 def predict_on_data(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
     """Generate predictions on arbitrary OHLCV data."""
     features, timestamps = compute_features(df)
+    vol = compute_vol_168(df)
     features = _normalize(features, fit=False)
     features = np.nan_to_num(features, nan=0.0)
 
@@ -166,6 +185,7 @@ def predict_on_data(df: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         raise RuntimeError("Model not trained. Run train.py first.")
 
     preds = model.predict(features)
+    preds = _vol_dampen(preds, vol[:len(preds)])
     return preds, timestamps
 
 
@@ -196,7 +216,13 @@ def main():
     targets = targets[valid]
     train_timestamps = timestamps[valid]
 
-    # No winsorization — let model learn from extreme events (crashes)
+    # Compute 168h volatility for dampening
+    train_vol = compute_vol_168(train_df)
+    train_vol = train_vol[valid[:len(train_vol)]]  # same trimming as features
+
+    global _vol_median
+    _vol_median = np.nanmedian(train_vol)
+    print(f"  Median 168h volatility: {_vol_median:.6f}")
 
     # Normalize features (fit on training data)
     features = _normalize(features, fit=True)
@@ -229,6 +255,7 @@ def main():
     # --- Evaluate on train split ---
     print("Evaluating on training data...")
     all_preds = model.predict(features)
+    all_preds = _vol_dampen(all_preds, train_vol)
 
     train_result = evaluate_model(all_preds, train_timestamps, n_params, split="train")
 
@@ -236,10 +263,12 @@ def main():
     print("Evaluating on validation data...")
     val_df = load_val_data()
     val_features, val_timestamps = compute_features(val_df)
+    val_vol = compute_vol_168(val_df)
     val_features = _normalize(val_features, fit=False)
     val_features = np.nan_to_num(val_features, nan=0.0)
 
     val_preds = model.predict(val_features)
+    val_preds = _vol_dampen(val_preds, val_vol[:len(val_preds)])
 
     val_result = evaluate_model(val_preds, val_timestamps, n_params, split="val")
 
