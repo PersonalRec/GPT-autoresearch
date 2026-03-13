@@ -187,7 +187,7 @@ def _apply_regime_filter(preds: np.ndarray, df: pd.DataFrame) -> np.ndarray:
     preds[crash_mask] = 0.0  # flat during crash
 
     # Cap predictions to limit max position size
-    preds = np.minimum(preds, 0.008)
+    preds = np.minimum(preds, 0.012)
 
     return preds
 
