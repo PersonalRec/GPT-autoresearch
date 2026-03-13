@@ -1,0 +1,16 @@
+commit	val_bpb	memory_gb	status	description
+c2450ad	1.450082	2.1	keep	baseline
+66fe9a5	1.453124	2.1	discard	increase EMBEDDING_LR to 0.8
+caf7573	1.641684	3.1	discard	increase DEPTH to 5
+3fe9332	1.455675	2.1	discard	reduce WEIGHT_DECAY to 0.1
+bcd8492	1.474246	4.1	discard	increase DEVICE_BATCH_SIZE to 8
+cc698c8	1.434841	2.1	keep	reduce WARMDOWN_RATIO to 0.3
+fa7fa24	1.436541	2.1	discard	reduce EMBEDDING_LR to 0.4
+6f61894	1.421254	2.1	keep	increase MATRIX_LR to 0.06
+bc77c13	1.478236	2.1	discard	add LR warmup (WARMUP_RATIO=0.05)
+94ab867	1.527702	2.1	discard	increase TOTAL_BATCH_SIZE to 2^17
+fe3b352	1.430720	2.1	discard	fine-tune MATRIX_LR to 0.05
+b6f4197	1.425186	2.1	discard	reduce WARMDOWN_RATIO to 0.2
+db3a8d5	1.426806	2.1	discard	increase SCALAR_LR to 0.7
+57490f2	1.427316	2.1	discard	reduce UNEMBEDDING_LR to 0.003
+a65ce9c	1.428833	2.1	discard	reduce WEIGHT_DECAY to 0.15

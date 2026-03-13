@@ -145,42 +145,95 @@ for i, trial in enumerate(all_trials, 1):
 # Create simple progress plot
 fig, ax = plt.subplots(figsize=(12, 6))
 
-# Plot running best line
+# Plot all trials as dots
 trial_nums = list(range(1, len(all_trials) + 1))
-ax.plot(trial_nums, running_best, 'g-', linewidth=2, label='Best val_bpb')
+all_vals = [t['val_bpb'] for t in all_trials]
 
-# Mark improvements with stars
-improvement_trials = [imp['trial'] for imp in improvements]
-improvement_vals = [imp['val_bpb'] for imp in improvements]
-ax.scatter(improvement_trials, improvement_vals, s=200, color='gold', marker='*',
-          edgecolors='green', linewidth=2, zorder=5, label='Improvement')
+# Separate kept vs discarded/failed trials
+kept_trials = []
+kept_vals = []
+failed_trials = []
+failed_vals = []
 
-# Annotate all improvements with clean positioning
-for idx, imp in enumerate(improvements):
-    desc = imp['description']
-    # Shorten long descriptions
-    if 'baseline' in desc.lower():
-        desc = 'baseline'
-    elif len(desc) > 35:
-        desc = desc[:32] + '...'
+for i, trial in enumerate(all_trials, 1):
+    val = trial['val_bpb']
+    desc = trial['description']
+    # Mark as failed if val is very high (crashed) or if it's a discarded manual trial
+    if val > 10 or 'discard' in desc:
+        failed_trials.append(i)
+        failed_vals.append(val if val < 10 else 1.52)  # Cap display for crashes
+    else:
+        kept_trials.append(i)
+        kept_vals.append(val)
 
-    # Alternate positioning to avoid overlap
-    y_offset = 0.009 if idx % 2 == 0 else -0.013
-    ha = 'center'
+# Plot dots
+ax.scatter(kept_trials, kept_vals, s=30, color='#2d3436', alpha=0.6, zorder=3, label='Trials')
+ax.scatter(failed_trials, failed_vals, s=30, color='#b2bec3', alpha=0.4, zorder=2, label='Failed/discarded')
 
-    # Special positioning for edges
-    if imp['trial'] < 5:
-        ha = 'left'
-    elif imp['trial'] > 70:
-        ha = 'right'
+# Plot running best line
+ax.plot(trial_nums, running_best, 'g-', linewidth=2.5, alpha=0.8, zorder=4, label='Best')
 
-    ax.annotate(desc,
-               xy=(imp['trial'], imp['val_bpb']),
-               xytext=(imp['trial'], imp['val_bpb'] + y_offset),
-               fontsize=7.5,
-               ha=ha,
-               bbox=dict(boxstyle='round,pad=0.25', facecolor='white', edgecolor='lightgray', alpha=0.85),
-               arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0', lw=0.8, color='gray'))
+# Annotate key improvements (every other one to avoid clutter)
+annotate_indices = [0, 1, 3, 5, 6, 7, 8, 9, 10]  # Select key improvements
+
+# Also annotate best Genetic result (even if not an improvement)
+genetic_best_trial = None
+genetic_best_val = float('inf')
+for i, trial in enumerate(all_trials[51:66], 52):  # Genetic focused range
+    if trial['val_bpb'] < genetic_best_val and trial['val_bpb'] < 10:
+        genetic_best_val = trial['val_bpb']
+        genetic_best_trial = i
+
+if genetic_best_trial:
+    ax.annotate(f'Genetic best\n({genetic_best_val:.3f})',
+               xy=(genetic_best_trial, genetic_best_val),
+               xytext=(genetic_best_trial, genetic_best_val - 0.003),
+               fontsize=7,
+               ha='center',
+               color='#6c5ce7',
+               bbox=dict(boxstyle='round,pad=0.25', facecolor='white', edgecolor='#6c5ce7', alpha=0.8, linewidth=0.8),
+               arrowprops=dict(arrowstyle='-', lw=0.8, color='#6c5ce7', alpha=0.6))
+
+for idx in annotate_indices:
+    if idx < len(improvements):
+        imp = improvements[idx]
+        desc = imp['description']
+
+        # Clean up descriptions
+        if 'baseline' in desc.lower():
+            desc = 'baseline'
+        elif 'matrix_lr' in desc.lower():
+            desc = desc.replace('increase ', '+').replace('reduce ', '').replace('MATRIX_LR', 'matrix_lr')
+        elif 'warmdown' in desc.lower():
+            desc = desc.replace('reduce ', '').replace('WARMDOWN_RATIO', 'warmdown')
+        elif 'emb_lr' in desc.lower() or 'embedding' in desc.lower():
+            desc = desc.replace('increase ', '+').replace('reduce ', '').replace('EMBEDDING_LR', 'emb_lr')
+        elif 'weight_decay' in desc.lower():
+            desc = desc.replace('reduce ', '').replace('WEIGHT_DECAY', 'wd')
+        elif 'Bayesian focused' in desc:
+            desc = 'Bayesian opt'
+        elif 'Genetic focused' in desc:
+            desc = 'Genetic opt'
+
+        if len(desc) > 35:
+            desc = desc[:32] + '...'
+
+        # Alternate positioning
+        y_offset = 0.010 if idx % 2 == 0 else -0.014
+        ha = 'center'
+
+        if imp['trial'] < 8:
+            ha = 'left'
+        elif imp['trial'] > 68:
+            ha = 'right'
+
+        ax.annotate(desc,
+                   xy=(imp['trial'], imp['val_bpb']),
+                   xytext=(imp['trial'], imp['val_bpb'] + y_offset),
+                   fontsize=7.5,
+                   ha=ha,
+                   bbox=dict(boxstyle='round,pad=0.25', facecolor='white', edgecolor='#636e72', alpha=0.9, linewidth=0.8),
+                   arrowprops=dict(arrowstyle='-', lw=0.8, color='#636e72', alpha=0.6))
 
 # Add baseline reference
 baseline = 1.451763
