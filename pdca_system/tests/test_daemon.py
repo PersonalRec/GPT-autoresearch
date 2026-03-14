@@ -598,16 +598,16 @@ def _run_stuck_check_with_diagnostics(
     """Run stuck-check with PROJECT_ROOT/LOG_DIR patched; return (ok, summary, diagnostic)."""
     orig_root = daemon_module.PROJECT_ROOT
     orig_log = daemon_module.LOG_DIR
-    orig_timeout = daemon_module.STUCK_CHECK_TIMEOUT_SECONDS
+    orig_stuck = daemon_module._stuck_check_timeout_seconds
     try:
         daemon_module.PROJECT_ROOT = root
         daemon_module.LOG_DIR = log_dir
-        daemon_module.STUCK_CHECK_TIMEOUT_SECONDS = 120
+        daemon_module._stuck_check_timeout_seconds = lambda: 120
         ok, summary = _run_stuck_check("kimi", prompt, run_id)
     finally:
         daemon_module.PROJECT_ROOT = orig_root
         daemon_module.LOG_DIR = orig_log
-        daemon_module.STUCK_CHECK_TIMEOUT_SECONDS = orig_timeout
+        daemon_module._stuck_check_timeout_seconds = orig_stuck
 
     diag: list[str] = []
     summary_path = root / daemon_module.SUMMARY_FILENAME

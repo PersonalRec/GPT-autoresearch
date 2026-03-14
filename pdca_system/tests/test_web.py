@@ -109,6 +109,71 @@ class WebTests(unittest.TestCase):
         self.assertEqual(run.status, RunStatus.queued)
         self.assertEqual(seed.prompt, "make a direct code edit")
 
+    def test_get_daemon_settings_api_returns_config(self) -> None:
+        client = TestClient(app)
+        response = client.get("/pdca-system/api/settings/daemon")
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("stuck_check_timeout_seconds", data)
+        self.assertIn("default_timeouts", data)
+        self.assertIsInstance(data["default_timeouts"], dict)
+        self.assertIn("pd", data["default_timeouts"])
+        self.assertIn("ca", data["default_timeouts"])
+        self.assertIn("direct", data["default_timeouts"])
+
+    def test_patch_daemon_settings_persists_and_returns_config(self) -> None:
+        from pdca_system.task import get_daemon_config, write_daemon_config
+
+        client = TestClient(app)
+        # Restore after test so we don't change real config
+        orig = get_daemon_config()
+        try:
+            response = client.patch(
+                "/pdca-system/api/settings/daemon",
+                json={"stuck_check_timeout_seconds": 99, "default_timeouts": {"pd": 111}},
+            )
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertEqual(data["stuck_check_timeout_seconds"], 99)
+            self.assertEqual(data["default_timeouts"]["pd"], 111)
+            self.assertEqual(get_daemon_config()["stuck_check_timeout_seconds"], 99)
+        finally:
+            write_daemon_config(orig)
+
+    def test_post_daemon_settings_form_saves_and_returns_partial(self) -> None:
+        from pdca_system.task import get_daemon_config, write_daemon_config
+
+        client = TestClient(app)
+        orig = get_daemon_config()
+        try:
+            response = client.post(
+                "/pdca-system/actions/settings/daemon",
+                data={
+                    "stuck_check_timeout_seconds": "88",
+                    "timeout_pd": "222",
+                    "timeout_ca": "3333",
+                    "timeout_direct": "4444",
+                },
+                headers={"HX-Request": "true"},
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("Ralph max loop", response.text)
+            self.assertIn('value="88"', response.text)
+            cfg = get_daemon_config()
+            self.assertEqual(cfg["stuck_check_timeout_seconds"], 88)
+            self.assertEqual(cfg["default_timeouts"]["pd"], 222)
+            self.assertEqual(cfg["default_timeouts"]["ca"], 3333)
+            self.assertEqual(cfg["default_timeouts"]["direct"], 4444)
+        finally:
+            write_daemon_config(orig)
+
+    def test_dashboard_includes_daemon_settings_popup_trigger(self) -> None:
+        client = TestClient(app)
+        response = client.get("/pdca-system")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("daemon-settings-modal-body", response.text)
+        self.assertIn("Settings", response.text)
+
 
 if __name__ == "__main__":
     unittest.main()

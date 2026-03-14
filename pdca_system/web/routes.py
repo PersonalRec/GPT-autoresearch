@@ -7,7 +7,13 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from pdca_system.domain.models import SeedStatus
 from pdca_system.services.workflow import GitCommandError, WorkflowService
-from pdca_system.task import PDCA_SYSTEM_ROOT, get_daemon_status, LOG_ROOT
+from pdca_system.task import (
+    get_daemon_config,
+    get_daemon_status,
+    LOG_ROOT,
+    PDCA_SYSTEM_ROOT,
+    write_daemon_config,
+)
 
 router = APIRouter()
 
@@ -63,6 +69,7 @@ def dashboard(request: Request, seed_id: str | None = None) -> HTMLResponse:
         "dashboard": viewmodel,
         "selected_seed_id": seed_id,
         "detail": workflow.seed_detail(seed_id) if seed_id else None,
+        "daemon_config": get_daemon_config(),
     }
     return _render(request, "dashboard.html", context)
 
@@ -77,6 +84,74 @@ def dashboard_board(request: Request, seed_id: str | None = None) -> HTMLRespons
 @router.get("/partials/daemon-status", response_class=HTMLResponse)
 def daemon_status_partial(request: Request) -> HTMLResponse:
     return _render(request, "partials/daemon_status.html", {"daemon_status": get_daemon_status()})
+
+
+@router.get("/api/settings/daemon")
+def get_daemon_settings() -> dict:
+    """Return agent timeout settings (stored under history folder)."""
+    return get_daemon_config()
+
+
+@router.patch("/api/settings/daemon")
+async def update_daemon_settings(request: Request) -> dict:
+    """Update agent timeout settings. Persisted to pdca_system/history/state/daemon_config.json."""
+    try:
+        body = await request.json() if request.headers.get("content-type", "").startswith("application/json") else {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="JSON body must be an object")
+    write_daemon_config(body)
+    return get_daemon_config()
+
+
+@router.get("/partials/daemon-settings", response_class=HTMLResponse)
+def daemon_settings_partial(request: Request) -> HTMLResponse:
+    return _render(request, "partials/daemon_settings.html", {"daemon_config": get_daemon_config()})
+
+
+def _parse_positive_int(value: str | int, default: int) -> int:
+    if isinstance(value, int):
+        return value if value > 0 else default
+    try:
+        n = int(value)
+        return n if n > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_int(value: str | int, default: int) -> int:
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+@router.post("/actions/settings/daemon", response_class=HTMLResponse, response_model=None)
+def save_daemon_settings(
+    request: Request,
+    stuck_check_timeout_seconds: str | int = Form("120"),
+    timeout_pd: str | int = Form("900"),
+    timeout_ca: str | int = Form("3600"),
+    timeout_direct: str | int = Form("3600"),
+    ralph_max_loop: str | int = Form("0"),
+) -> HTMLResponse | Response:
+    """Save settings from form. Stored under history/state/daemon_config.json."""
+    stuck_check_timeout_seconds = _parse_positive_int(stuck_check_timeout_seconds, 120)
+    timeout_pd = _parse_positive_int(timeout_pd, 900)
+    timeout_ca = _parse_positive_int(timeout_ca, 3600)
+    timeout_direct = _parse_positive_int(timeout_direct, 3600)
+    ralph_max_loop = _parse_int(ralph_max_loop, 0)
+    write_daemon_config({
+        "stuck_check_timeout_seconds": stuck_check_timeout_seconds,
+        "default_timeouts": {"pd": timeout_pd, "ca": timeout_ca, "direct": timeout_direct},
+        "ralph_max_loop": ralph_max_loop,
+    })
+    if _is_htmx(request):
+        return _render(request, "partials/daemon_settings.html", {"daemon_config": get_daemon_config()})
+    return RedirectResponse(request.url_for("dashboard"), status_code=303)
 
 
 @router.get("/partials/seeds/{seed_id}", response_class=HTMLResponse)

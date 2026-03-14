@@ -47,11 +47,13 @@ from pdca_system.services.workflow import (
 from pdca_system.task import (
     BASELINE_BRANCHES_PATH,
     BASELINE_METRICS_PATH,
+    DEFAULT_DAEMON_CONFIG,
     PDCA_SYSTEM_ROOT,
     claim_pending,
     DAEMON_HEARTBEAT_PATH,
     daemon_heartbeat,
     ensure_queue_layout,
+    get_daemon_config,
     LOG_ROOT,
     move_to_done,
     move_to_error,
@@ -67,11 +69,6 @@ PROGRESS_PNG = PROJECT_ROOT / "progress.png"
 POLL_INTERVAL = 10.0
 _shutdown = False
 WORKFLOW = WorkflowService()
-
-DEFAULT_TIMEOUTS = {"pd": 900, "ca": 3600, "direct": 3600}
-
-# Canonical CA run: execute project's train.py (≥900s). Agent must set command/tool timeout ≥ this.
-CA_CANONICAL_RUN_TIMEOUT_SECONDS = 900
 
 STAGE_DOCS = {
     "pd": ["PDCA-Plan-Do.md"],
@@ -118,10 +115,26 @@ def _env_int(name: str, default: int) -> int:
 
 
 AGENT_DOWNGRADE_NONZERO_STREAK = _env_int("PDCA_AGENT_DOWNGRADE_AFTER", 5)
+# Runs shorter than this are treated as abnormal and count toward agent downgrade streak.
+# Keep below typical small-dataset run times (e.g. 20–30s) so valid short runs are not flagged.
+AGENT_MIN_RUNTIME_SECONDS = _env_int("PDCA_AGENT_MIN_RUNTIME_SECONDS", 15)
 
 # Stuck-check: run backup agent to confirm previous agent was stuck before switching.
-STUCK_CHECK_TIMEOUT_SECONDS = _env_int("PDCA_STUCK_CHECK_TIMEOUT", 120)
-STUCK_CHECK_LOG_TAIL_LINES = 80
+# Default; env PDCA_STUCK_CHECK_TIMEOUT overrides; else value from history/state/daemon_config.json.
+STUCK_CHECK_LOG_TAIL_LINES = 100
+
+
+def _stuck_check_timeout_seconds() -> int:
+    """Stuck-check timeout: env override, else config from history folder, else 120."""
+    env_val = os.environ.get("PDCA_STUCK_CHECK_TIMEOUT")
+    if env_val is not None:
+        try:
+            v = int(env_val)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return get_daemon_config().get("stuck_check_timeout_seconds", 120)
 
 
 def _run_agent_probe(cmd: list[str], timeout: float = AGENT_DETECT_TIMEOUT_SECONDS) -> tuple[bool, str]:
@@ -313,7 +326,7 @@ def _run_stuck_check(
         run_id,
         worktree_path=None,
         agent_override=candidate_agent,
-        timeout_override=STUCK_CHECK_TIMEOUT_SECONDS,
+        timeout_override=_stuck_check_timeout_seconds(),
     )
     summary_path = Path(PROJECT_ROOT) / SUMMARY_FILENAME
     if not summary_path.exists():
@@ -375,7 +388,14 @@ def _signal_handler(_sig: int, _frame: Any) -> None:
 
 
 def _get_timeout(stage: str) -> int:
-    return int(os.environ.get(f"PDCA_TIMEOUT_{stage.upper()}", DEFAULT_TIMEOUTS.get(stage, 900)))
+    env_val = os.environ.get(f"PDCA_TIMEOUT_{stage.upper()}")
+    if env_val is not None:
+        try:
+            return max(1, int(env_val))
+        except ValueError:
+            pass
+    timeouts = get_daemon_config().get("default_timeouts", DEFAULT_DAEMON_CONFIG["default_timeouts"])
+    return int(timeouts.get(stage, DEFAULT_DAEMON_CONFIG["default_timeouts"].get(stage, 900)))
 
 
 def _build_log_paths(run_id: str) -> tuple[Path, Path]:
@@ -739,6 +759,7 @@ def _invoke_agent(
             stderr_thread.start()
 
             timed_out = False
+            start_time = time.monotonic()
             try:
                 process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -747,6 +768,7 @@ def _invoke_agent(
 
             stdout_thread.join()
             stderr_thread.join()
+            elapsed_seconds = time.monotonic() - start_time
 
         stdout = "".join(stdout_chunks)
         stderr = "".join(stderr_chunks)
@@ -764,6 +786,8 @@ def _invoke_agent(
         ret = int(process.returncode)
         if agent_override is None:
             effective = _effective_exit_for_downgrade(agent_name, ret, stderr, stdout)
+            if elapsed_seconds < AGENT_MIN_RUNTIME_SECONDS:
+                effective = effective or 1
             if _record_agent_exit(agent_name, effective):
                 _maybe_rotate_after_stuck_check(agent_name, run_id, stdout_path, stderr_path)
         return agent_name, ret, stdout, stderr, stdout_path, stderr_path
@@ -1007,7 +1031,7 @@ def _build_prompt(stage: str, task: dict[str, Any], task_path: Path) -> str:
                 "You must retry until the run completes successfully and you can report real metrics. Do not report empty metrics and stop.\n"
                 "If training fails with CUDA out of memory (OOM): the default batch size is for H100. Reduce DEVICE_BATCH_SIZE (and if needed TOTAL_BATCH_SIZE) in train.py so training fits in available VRAM, then rerun until the baseline run completes. Only trivial execution fixes (e.g. batch size) are allowed; do not change model architecture or training logic.\n"
                 "If you modified any files (e.g. batch size for OOM), you must commit those changes on the baseline branch before reporting. An uncommitted worktree causes the follow-up merge to fail.\n"
-                f"Use this Python executable for the canonical run: `{runner_label}` ({ca_note}). Run the project's canonical command (see protocol; e.g. train.py or the script your project uses) with it, e.g. `{python_exe} <script> > training.log 2>&1`. Set your command/tool timeout to at least {CA_CANONICAL_RUN_TIMEOUT_SECONDS} seconds. After the run, inspect training.log to confirm completion and recover or verify metrics.\n"
+                f"Use this Python executable for the canonical run: `{runner_label}` ({ca_note}). Run the project's canonical command (see protocol; e.g. train.py or the script your project uses) with it, e.g. `{python_exe} <script> > training.log 2>&1`. Set your command/tool timeout to at least {_get_timeout('ca')} seconds. After the run, inspect training.log to confirm completion and recover or verify metrics.\n"
                 f"Write the final result JSON to the file named {SUMMARY_FILENAME} in your current working directory once training has completed successfully. The metrics object must include the target metric key {TARGET_METRIC_KEY!r}. Include the current commit SHA in the summary (commit any changes first). Do not print this JSON to stdout or stderr. Use this shape (reference): "
                 f'{{"checks":["baseline_measurement"],"notes":"Measured the current baseline in the dedicated baseline worktree.","completed_at":"YYYY-MM-DD HH:MM:SS","commit_sha":"...","metrics":{{"{TARGET_METRIC_KEY}":1.239972,"training_seconds":300.1,"total_seconds":360.4,"startup_seconds":25.8,"peak_vram_mb":11967.8,"mfu_percent":2.15,"total_tokens_M":140.5,"num_steps":268,"num_params_M":11.5,"depth":4}}}}\n'
                 "If after all retries (including batch size reduction) metrics are still unavailable, only then write the same object with an empty metrics object and explain in notes.\n"
@@ -1020,7 +1044,7 @@ def _build_prompt(stage: str, task: dict[str, Any], task_path: Path) -> str:
             "The task \"prompt\" is for context only; do not treat it as a goal to achieve in this stage.\n\n"
             "Workflow:\n"
             "1. Adapt or fix the generated code in the seed worktree until it runs.\n"
-            f"2. Use this Python executable for the canonical run: `{runner_label}` ({ca_note}). Run the project's canonical command (see protocol; e.g. train.py or the script your project uses) with it, e.g. `{python_exe} <script> > training.log 2>&1` (or `... 2>&1 | tee training.log` to also see output). Set your command/tool timeout to at least {CA_CANONICAL_RUN_TIMEOUT_SECONDS} seconds. After the run, inspect training.log to confirm completion and recover or verify metrics.\n"
+            f"2. Use this Python executable for the canonical run: `{runner_label}` ({ca_note}). Run the project's canonical command (see protocol; e.g. train.py or the script your project uses) with it, e.g. `{python_exe} <script> > training.log 2>&1` (or `... 2>&1 | tee training.log` to also see output). Set your command/tool timeout to at least {_get_timeout('ca')} seconds. After the run, inspect training.log to confirm completion and recover or verify metrics.\n"
             "3. If it fails for a simple reason, fix and rerun.\n"
             "4. Create a git commit in the seed branch for your changes.\n"
             f"5. Write the final result JSON to the file named {SUMMARY_FILENAME} in your current working directory. The metrics object must include the target metric key {TARGET_METRIC_KEY!r}. Include the current commit SHA in the summary. Do not print this JSON to stdout or stderr. Use this shape (reference) and include numeric metric values when available: "

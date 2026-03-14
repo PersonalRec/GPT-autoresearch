@@ -36,6 +36,7 @@ from pdca_system.logging_utils import get_logger
 from pdca_system.task import (
     PDCA_SYSTEM_ROOT,
     WORKTREE_ROOT,
+    get_daemon_config,
     get_daemon_status,
     move_to_error,
     now_ts,
@@ -55,6 +56,8 @@ TIMELINE_SHORT_MESSAGES = {
     "seed.worktree_ready": "Worktree ready",
     "ralph.enabled": "Ralph loop enabled",
     "ralph.disabled": "Ralph loop disabled",
+    "ralph.requeued": "Ralph loop queued next Plan-Do",
+    "ralph.max_reached": "Ralph loop max iterations reached",
     "pd.queued": "Plan-Do queued",
     "pd.started": "Plan-Do started",
     "pd.completed": "Plan-Do completed",
@@ -1094,6 +1097,16 @@ class WorkflowService:
                 commit_sha=ref,
             )
 
+    def _ralph_should_requeue(self, seed_id: str) -> bool:
+        """True if Ralph loop may requeue (max not reached). Config ralph_max_loop ≤0 = infinite."""
+        cfg = get_daemon_config()
+        max_loop = cfg.get("ralph_max_loop", 0)
+        if max_loop <= 0:
+            return True
+        events = self.seed_repo.events(seed_id)
+        requeued = sum(1 for e in events if e.get("kind") == "ralph.requeued")
+        return requeued < max_loop
+
     def mark_run_failed(
         self,
         seed_id: str,
@@ -1133,18 +1146,25 @@ class WorkflowService:
             and task_payload.get("metrics_recovery") is not True
         ):
             self._ralph_try_restore_worktree(seed, run.summary.get("commit_sha_before_pd"))
-            try:
-                self.queue_pd(seed.seed_id)
+            if self._ralph_should_requeue(seed.seed_id):
+                try:
+                    self.queue_pd(seed.seed_id)
+                    self.seed_repo.append_event(
+                        seed.seed_id,
+                        "ralph.requeued",
+                        "Ralph loop queued the next Plan-Do run after failed Check-Action.",
+                    )
+                except (RuntimeError, GitCommandError) as exc:
+                    self.seed_repo.append_event(
+                        seed.seed_id,
+                        "ralph.requeue_failed",
+                        f"Ralph loop could not queue the next Plan-Do run after failed Check-Action: {exc}",
+                    )
+            else:
                 self.seed_repo.append_event(
                     seed.seed_id,
-                    "ralph.requeued",
-                    "Ralph loop queued the next Plan-Do run after failed Check-Action.",
-                )
-            except (RuntimeError, GitCommandError) as exc:
-                self.seed_repo.append_event(
-                    seed.seed_id,
-                    "ralph.requeue_failed",
-                    f"Ralph loop could not queue the next Plan-Do run after failed Check-Action: {exc}",
+                    "ralph.max_reached",
+                    "Ralph loop max iterations reached; not queuing another Plan-Do run.",
                 )
         if task_path is not None and task_path.exists():
             move_to_error(task_path)
@@ -1586,18 +1606,25 @@ class WorkflowService:
                         metrics=metrics,
                     )
                     if seed.ralph_loop_enabled:
-                        try:
-                            self.queue_pd(seed.seed_id)
+                        if self._ralph_should_requeue(seed.seed_id):
+                            try:
+                                self.queue_pd(seed.seed_id)
+                                self.seed_repo.append_event(
+                                    seed.seed_id,
+                                    "ralph.requeued",
+                                    "Ralph loop queued the next Plan-Do run after unresolved merge conflict.",
+                                )
+                            except (RuntimeError, GitCommandError) as exc:
+                                self.seed_repo.append_event(
+                                    seed.seed_id,
+                                    "ralph.requeue_failed",
+                                    f"Ralph loop could not queue the next Plan-Do run after unresolved merge conflict: {exc}",
+                                )
+                        else:
                             self.seed_repo.append_event(
                                 seed.seed_id,
-                                "ralph.requeued",
-                                "Ralph loop queued the next Plan-Do run after unresolved merge conflict.",
-                            )
-                        except (RuntimeError, GitCommandError) as exc:
-                            self.seed_repo.append_event(
-                                seed.seed_id,
-                                "ralph.requeue_failed",
-                                f"Ralph loop could not queue the next Plan-Do run after unresolved merge conflict: {exc}",
+                                "ralph.max_reached",
+                                "Ralph loop max iterations reached; not queuing another Plan-Do run.",
                             )
                     return run
         elif terminal_status is SeedStatus.failed:
@@ -1630,18 +1657,25 @@ class WorkflowService:
         ):
             self._ralph_try_restore_worktree(seed, run.summary.get("commit_sha_before_pd"))
         if seed.ralph_loop_enabled:
-            try:
-                self.queue_pd(seed.seed_id)
+            if self._ralph_should_requeue(seed.seed_id):
+                try:
+                    self.queue_pd(seed.seed_id)
+                    self.seed_repo.append_event(
+                        seed.seed_id,
+                        "ralph.requeued",
+                        "Ralph loop queued the next Plan-Do run.",
+                    )
+                except (RuntimeError, GitCommandError) as exc:
+                    self.seed_repo.append_event(
+                        seed.seed_id,
+                        "ralph.requeue_failed",
+                        f"Ralph loop could not queue the next Plan-Do run: {exc}",
+                    )
+            else:
                 self.seed_repo.append_event(
                     seed.seed_id,
-                    "ralph.requeued",
-                    "Ralph loop queued the next Plan-Do run.",
-                )
-            except (RuntimeError, GitCommandError) as exc:
-                self.seed_repo.append_event(
-                    seed.seed_id,
-                    "ralph.requeue_failed",
-                    f"Ralph loop could not queue the next Plan-Do run: {exc}",
+                    "ralph.max_reached",
+                    "Ralph loop max iterations reached; not queuing another Plan-Do run.",
                 )
         LOGGER.info(
             "CA run %s finished for seed %s with signal=%s status=%s",

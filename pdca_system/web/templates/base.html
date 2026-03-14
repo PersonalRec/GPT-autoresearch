@@ -20,8 +20,35 @@
           </a>
           <p class="mt-1 text-sm text-slate-400">Seed -> Plan-Do -> Check-Action orchestration with FastAPI, HTMX, Alpine, and Tailwind.</p>
         </div>
-        <nav class="flex items-center gap-4 text-sm text-slate-300">
-          <a class="hover:text-white" href="{{ request.url_for('dashboard') }}">Dashboard</a>
+        <nav class="flex items-center gap-4 text-sm text-slate-300" x-data="{ settingsOpen: false }">
+          <button
+            type="button"
+            class="hover:text-white"
+            @click="settingsOpen = true"
+            hx-get="{{ request.url_for('daemon_settings_partial') }}"
+            hx-target="#daemon-settings-modal-body"
+            hx-swap="innerHTML"
+            hx-trigger="click"
+          >
+            Settings
+          </button>
+          <div
+            x-show="settingsOpen"
+            x-cloak
+            class="fixed inset-0 z-50 flex items-center justify-center p-4"
+            @keydown.escape.window="settingsOpen = false"
+          >
+            <div class="absolute inset-0 bg-black/60" @click="settingsOpen = false"></div>
+            <div class="relative z-10 w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-xl" @click.stop>
+              <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+                <h2 class="text-lg font-medium text-white">Settings</h2>
+                <button type="button" class="rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white" @click="settingsOpen = false" aria-label="Close">✕</button>
+              </div>
+              <div id="daemon-settings-modal-body" class="mt-4 min-h-[8rem] text-sm text-slate-300">
+                <p class="text-slate-500">Loading…</p>
+              </div>
+            </div>
+          </div>
         </nav>
       </div>
     </header>

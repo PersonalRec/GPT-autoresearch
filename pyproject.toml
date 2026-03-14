@@ -21,6 +21,9 @@ dependencies = [
     "uvicorn>=0.35.0",
 ]
 
+[project.optional-dependencies]
+test = ["httpx>=0.28.0", "pytest>=8.0.0"]
+
 [tool.uv.sources]
 torch = [
     { index = "pytorch-cu128" },

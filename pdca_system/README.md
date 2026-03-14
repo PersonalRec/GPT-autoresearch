@@ -79,6 +79,19 @@ All runtime data (queue, state, logs, worktrees) lives under `pdca_system/histor
 
 ---
 
+## Testing
+
+From the project root, run the PDCA tests with:
+
+```bash
+uv sync --extra test
+uv run pytest pdca_system/tests -v
+```
+
+The `test` extra installs `httpx`, which is required for FastAPI’s `TestClient` (web route tests). Production installs can omit it (`uv sync` without `--extra test`).
+
+---
+
 ## Making it fit your project
 
 - **Protocol and stage docs** — Edit `protocol.md`, `PDCA-Plan-Do.md`, and `PDCA-Check-Action.md` to describe your repo’s layout, **canonical run command** (the script or module to run, e.g. `train.py` or `pytest`), success metric, and promotion rules. The daemon injects the **Python executable** (the one running the daemon) into CA prompts; the agent uses that Python with the canonical command defined in your protocol/docs.

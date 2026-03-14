@@ -31,6 +31,13 @@ DONE_DIR = QUEUE_ROOT / "done"
 ERROR_DIR = QUEUE_ROOT / "error"
 DAEMON_HEARTBEAT_PATH = STATE_ROOT / "daemon_heartbeat.json"
 DAEMON_HEARTBEAT_STALE_SECONDS = 5
+DAEMON_CONFIG_PATH = STATE_ROOT / "daemon_config.json"
+
+DEFAULT_DAEMON_CONFIG: dict[str, Any] = {
+    "stuck_check_timeout_seconds": 120,
+    "default_timeouts": {"pd": 900, "ca": 3600, "direct": 3600},
+    "ralph_max_loop": 0,  # ≤0 = infinite
+}
 
 def _read_json(path: Path, default: Any) -> Any:
     if not path.exists():
@@ -42,6 +49,40 @@ def _write_json(path: Path, payload: Any) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def get_daemon_config() -> dict[str, Any]:
+    """Read daemon config from history folder. Returns defaults for missing keys."""
+    data = _read_json(DAEMON_CONFIG_PATH, {})
+    out: dict[str, Any] = {
+        "stuck_check_timeout_seconds": data.get("stuck_check_timeout_seconds", DEFAULT_DAEMON_CONFIG["stuck_check_timeout_seconds"]),
+        "default_timeouts": dict(DEFAULT_DAEMON_CONFIG["default_timeouts"]),
+        "ralph_max_loop": data.get("ralph_max_loop", DEFAULT_DAEMON_CONFIG["ralph_max_loop"]),
+    }
+    if "default_timeouts" in data and isinstance(data["default_timeouts"], dict):
+        for k, v in data["default_timeouts"].items():
+            if isinstance(v, int) and v > 0:
+                out["default_timeouts"][k] = v
+    if isinstance(data.get("stuck_check_timeout_seconds"), int) and data["stuck_check_timeout_seconds"] > 0:
+        out["stuck_check_timeout_seconds"] = data["stuck_check_timeout_seconds"]
+    if isinstance(data.get("ralph_max_loop"), int):
+        out["ralph_max_loop"] = data["ralph_max_loop"]
+    return out
+
+
+def write_daemon_config(config: dict[str, Any]) -> None:
+    """Write daemon config to history folder. Merges with existing so partial updates are supported."""
+    existing = get_daemon_config()
+    if "stuck_check_timeout_seconds" in config and isinstance(config["stuck_check_timeout_seconds"], int) and config["stuck_check_timeout_seconds"] > 0:
+        existing["stuck_check_timeout_seconds"] = config["stuck_check_timeout_seconds"]
+    if "default_timeouts" in config and isinstance(config["default_timeouts"], dict):
+        for k, v in config["default_timeouts"].items():
+            if isinstance(v, int) and v > 0:
+                existing["default_timeouts"][k] = v
+    if "ralph_max_loop" in config and isinstance(config["ralph_max_loop"], int):
+        existing["ralph_max_loop"] = config["ralph_max_loop"]
+    ensure_queue_layout()
+    _write_json(DAEMON_CONFIG_PATH, existing)
 
 
 def now_ts() -> float:
