@@ -824,14 +824,92 @@ class FixAccessibility(OptimizationStrategy):
         return True
 
 
+class FixAccessibility2(OptimizationStrategy):
+    """Fix remaining accessibility issues.
+
+    1. Color contrast: bg-primary-600 (3.3:1) → bg-primary-700 (5.0:1) on CTA buttons (weight 7)
+    2. Heading order: h3 after h1 (skips h2) in why_snapwerks_for_service_pro (weight 3)
+    3. Touch targets: popular-services JS controller creates tiny dots → add min-size inline style
+    """
+
+    name = "fix_accessibility_2"
+    description = "Fix color contrast on CTA buttons, heading order, and JS-generated touch targets"
+
+    WHY_HOMEOWNER = TARGET_PROJECT / "templates" / "components" / "why_snapwerks_for_homeowner.html.twig"
+    WHY_PRO = TARGET_PROJECT / "templates" / "components" / "why_snapwerks_for_service_pro.html.twig"
+    POPULAR_CTRL = TARGET_PROJECT / "assets" / "controllers" / "popular_services_controller.js"
+
+    CHANGES = [
+        # 1. Fix create-job CTA button contrast
+        (
+            WHY_HOMEOWNER,
+            'bg-primary-600 hover:bg-primary-700 text-white font-semibold px-8 py-4 rounded-xl transition-all duration-300 shadow-md hover:shadow-lg hover:-translate-y-0.5',
+            'bg-primary-700 hover:bg-primary-800 text-white font-semibold px-8 py-4 rounded-xl transition-all duration-300 shadow-md hover:shadow-lg hover:-translate-y-0.5',
+        ),
+        # 2. Fix growth-plan button contrast
+        (
+            WHY_PRO,
+            'bg-primary-600 hover:bg-primary-700 text-white font-semibold px-6 py-3 rounded-lg transition-colors text-sm whitespace-nowrap',
+            'bg-primary-700 hover:bg-primary-800 text-white font-semibold px-6 py-3 rounded-lg transition-colors text-sm whitespace-nowrap',
+        ),
+        # 3. Fix heading order: h3 → h2 in service pro component
+        (
+            WHY_PRO,
+            '<h3 class="text-lg font-bold text-gray-900 mb-1">',
+            '<h2 class="text-lg font-bold text-gray-900 mb-1">',
+        ),
+        (
+            WHY_PRO,
+            '</h3>',
+            '</h2>',
+        ),
+        # 4. Fix JS-generated touch targets for popular-services carousel
+        (
+            POPULAR_CTRL,
+            "button.className = 'group relative flex items-center justify-center'",
+            "button.className = 'group relative flex items-center justify-center w-11 h-11'",
+        ),
+    ]
+
+    def apply(self):
+        applied = 0
+        for file_path, old, new in self.CHANGES:
+            content = file_path.read_text()
+            if old in content:
+                file_path.write_text(content.replace(old, new))
+                applied += 1
+        # Recompile assets since JS changed
+        subprocess.run(
+            ["docker", "exec", "snapwerks-app-1", "php", "bin/console", "asset-map:compile"],
+            cwd=TARGET_PROJECT, capture_output=True, timeout=60
+        )
+        # Remove old compiled popular_services files
+        for old_file in (TARGET_PROJECT / "public" / "assets" / "controllers").glob("popular_services_controller-*.js"):
+            old_path = str(old_file)
+            if "popular_services" in old_path:
+                pass  # keep all, new hash will be used
+        return applied > 0
+
+    def revert(self):
+        for file_path, old, new in self.CHANGES:
+            content = file_path.read_text()
+            if new in content:
+                file_path.write_text(content.replace(new, old))
+        subprocess.run(
+            ["docker", "exec", "snapwerks-app-1", "php", "bin/console", "asset-map:compile"],
+            cwd=TARGET_PROJECT, capture_output=True, timeout=60
+        )
+        return True
+
+
 def main():
     """Main entry point."""
     print("=" * 60)
-    print("Lighthouse Optimization - Experiment: fix_accessibility")
+    print("Lighthouse Optimization - Experiment: fix_accessibility_2")
     print("=" * 60)
     print()
 
-    summary = run_optimization(FixAccessibility)
+    summary = run_optimization(FixAccessibility2)
     print_summary(summary)
 
 
