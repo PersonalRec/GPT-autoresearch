@@ -68,9 +68,179 @@ STAGE_DOCS = {
 AGENT_CONFIGS: dict[str, dict[str, Any]] = {
     "claude": {"cmd": ["claude", "-p", "--verbose"], "via": "stdin"},
     "codex": {"cmd": ["codex", "exec", "-a", "never", "--sandbox", "workspace-write"], "via": "arg"},
+    "gemini": {"cmd": ["gemini", "--yolo", "-p"], "via": "arg"},
     "opencode": {"cmd": ["opencode", "run"], "via": "arg"},
     "kimi": {"cmd": ["kimi", "--yolo", "-p"], "via": "arg"},
 }
+
+# Probe commands used at daemon startup to detect which CLIs are installed and responsive.
+# `--version` is preferred; fallback probes keep detection robust across heterogeneous CLIs.
+AGENT_VERSION_PROBES: dict[str, list[list[str]]] = {
+    "claude": [["--version"]],
+    "codex": [["--version"], ["-v"]],
+    "gemini": [["--version"], ["-v"]],
+    "opencode": [["--version"], ["-v"], ["version"]],
+    "kimi": [["--version"], ["-v"], ["version"]],
+}
+
+AGENT_DETECT_TIMEOUT_SECONDS = 8.0
+_AGENT_HEALTH_LOCK = threading.Lock()
+_AGENT_RUNTIME_STATE: dict[str, Any] = {
+    "available": [],
+    "unavailable": {},
+    "active": None,
+    "nonzero_streak": {},
+}
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+AGENT_DOWNGRADE_NONZERO_STREAK = _env_int("PDCA_AGENT_DOWNGRADE_AFTER", 5)
+
+
+def _run_agent_probe(cmd: list[str], timeout: float = AGENT_DETECT_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        return False, str(exc)
+    except subprocess.TimeoutExpired:
+        return False, f"probe timeout after {timeout:.0f}s"
+    output = _combined_output(proc.stdout, proc.stderr).strip()
+    if proc.returncode == 0:
+        return True, output.splitlines()[0] if output else "ok"
+    return False, output.splitlines()[-1] if output else f"exit {proc.returncode}"
+
+
+def _detect_available_agents(preferred_agent: str) -> tuple[list[str], dict[str, str]]:
+    available: list[str] = []
+    unavailable: dict[str, str] = {}
+
+    # Keep operator preference first when present, then probe all known backends.
+    ordered = [preferred_agent, *[name for name in AGENT_CONFIGS if name != preferred_agent]]
+    for agent_name in ordered:
+        config = AGENT_CONFIGS.get(agent_name)
+        if config is None:
+            unavailable[agent_name] = "unknown agent config"
+            continue
+        binary = config["cmd"][0]
+        binary_path = shutil.which(binary)
+        if binary_path is None:
+            unavailable[agent_name] = f"binary {binary!r} not found on PATH"
+            continue
+
+        probes = AGENT_VERSION_PROBES.get(agent_name, [["--version"], ["-v"]])
+        passed = False
+        last_reason = ""
+        for probe_args in probes:
+            ok, reason = _run_agent_probe([binary, *probe_args])
+            if ok:
+                passed = True
+                break
+            last_reason = reason
+        if passed:
+            available.append(agent_name)
+        else:
+            unavailable[agent_name] = (
+                f"version probe failed ({binary_path}): {last_reason or 'unknown error'}"
+            )
+    return available, unavailable
+
+
+def _initialize_agent_runtime_state() -> None:
+    preferred_agent = os.environ.get("PDCA_AGENT", "claude")
+    available, unavailable = _detect_available_agents(preferred_agent)
+    if not available:
+        reasons = "; ".join(f"{name}: {reason}" for name, reason in unavailable.items())
+        raise RuntimeError(
+            "No supported code agents detected. Install at least one supported CLI "
+            f"or adjust PATH. Detection details: {reasons}"
+        )
+
+    with _AGENT_HEALTH_LOCK:
+        _AGENT_RUNTIME_STATE["available"] = list(available)
+        _AGENT_RUNTIME_STATE["unavailable"] = dict(unavailable)
+        _AGENT_RUNTIME_STATE["active"] = available[0]
+        _AGENT_RUNTIME_STATE["nonzero_streak"] = {name: 0 for name in available}
+
+
+def _active_agent_name() -> str:
+    with _AGENT_HEALTH_LOCK:
+        available = list(_AGENT_RUNTIME_STATE.get("available", []))
+        active = _AGENT_RUNTIME_STATE.get("active")
+        if not available:
+            raise RuntimeError("No available code agent backend.")
+        if active not in available:
+            active = available[0]
+            _AGENT_RUNTIME_STATE["active"] = active
+        return str(active)
+
+
+def _mark_agent_unavailable(agent_name: str, reason: str) -> None:
+    with _AGENT_HEALTH_LOCK:
+        available = list(_AGENT_RUNTIME_STATE.get("available", []))
+        if agent_name in available:
+            available.remove(agent_name)
+        _AGENT_RUNTIME_STATE["available"] = available
+        unavailable = dict(_AGENT_RUNTIME_STATE.get("unavailable", {}))
+        unavailable[agent_name] = reason
+        _AGENT_RUNTIME_STATE["unavailable"] = unavailable
+        streak = dict(_AGENT_RUNTIME_STATE.get("nonzero_streak", {}))
+        streak.pop(agent_name, None)
+        _AGENT_RUNTIME_STATE["nonzero_streak"] = streak
+        if _AGENT_RUNTIME_STATE.get("active") == agent_name:
+            _AGENT_RUNTIME_STATE["active"] = available[0] if available else None
+
+
+def _rotate_active_agent(reason: str) -> None:
+    with _AGENT_HEALTH_LOCK:
+        available = list(_AGENT_RUNTIME_STATE.get("available", []))
+        if len(available) <= 1:
+            return
+        current = _AGENT_RUNTIME_STATE.get("active")
+        try:
+            idx = available.index(current)
+        except ValueError:
+            idx = -1
+        next_agent = available[(idx + 1) % len(available)]
+        if next_agent != current:
+            _AGENT_RUNTIME_STATE["active"] = next_agent
+            print(f"[daemon] agent downgrade: {current} -> {next_agent} ({reason})")
+
+
+def _record_agent_exit(agent_name: str, exit_code: int) -> None:
+    with _AGENT_HEALTH_LOCK:
+        streak = dict(_AGENT_RUNTIME_STATE.get("nonzero_streak", {}))
+        if agent_name not in streak:
+            return
+        if exit_code == 0:
+            streak[agent_name] = 0
+        else:
+            streak[agent_name] = int(streak.get(agent_name, 0)) + 1
+        _AGENT_RUNTIME_STATE["nonzero_streak"] = streak
+        current_streak = streak[agent_name]
+    if exit_code != 0 and current_streak >= AGENT_DOWNGRADE_NONZERO_STREAK:
+        _rotate_active_agent(
+            f"{agent_name} non-zero exit streak={current_streak} "
+            f"(threshold={AGENT_DOWNGRADE_NONZERO_STREAK})"
+        )
 
 
 def _signal_handler(_sig: int, _frame: Any) -> None:
@@ -245,105 +415,123 @@ def _sync_worktree_context(worktree_path: str | None) -> None:
 
 def _invoke_agent(
     prompt: str, stage: str, run_id: str, worktree_path: str | None = None
-) -> tuple[int, str, str, Path | None, Path | None]:
-    agent_name = os.environ.get("PDCA_AGENT", "claude")
-    config = AGENT_CONFIGS.get(agent_name)
-    if config is None:
-        raise ValueError(f"Unknown PDCA_AGENT={agent_name!r}. Supported: {', '.join(AGENT_CONFIGS)}")
+) -> tuple[str, int, str, str, Path | None, Path | None]:
+    attempted_agents: set[str] = set()
+    while True:
+        agent_name = _active_agent_name()
+        if agent_name in attempted_agents:
+            return (
+                agent_name,
+                -1,
+                "",
+                "All detected agent backends failed to launch. See daemon logs for details.",
+                None,
+                None,
+            )
+        attempted_agents.add(agent_name)
+        config = AGENT_CONFIGS.get(agent_name)
+        if config is None:
+            _mark_agent_unavailable(agent_name, "missing config entry")
+            continue
 
-    cmd = list(config["cmd"])
-    timeout = _get_timeout(stage)
-    cwd = _agent_cwd(worktree_path)
-    # PYTHONUNBUFFERED=1 so child Python (e.g. uv run train.py) flushes stdout
-    # immediately instead of block-buffering when stdout is a pipe; otherwise
-    # stdout log only appears in one shot after the task finishes.
-    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    if agent_name == "opencode":
-        project_root_glob = str(PROJECT_ROOT.resolve().as_posix()) + "/**"
-        existing = {}
-        try:
-            if os.environ.get("OPENCODE_PERMISSION"):
-                existing = json.loads(os.environ["OPENCODE_PERMISSION"])
-        except (json.JSONDecodeError, KeyError):
-            pass
-        ext_dir = dict(existing.get("external_directory", {}))
-        ext_dir[project_root_glob] = "allow"
-        env["OPENCODE_PERMISSION"] = json.dumps({"external_directory": ext_dir})
-    popen_kwargs: dict[str, Any] = {
-        "cwd": cwd,
-        "env": env,
-        "stdout": subprocess.PIPE,
-        "stderr": subprocess.PIPE,
-        "text": True,
-        "encoding": "utf-8",
-        "errors": "replace",
-        "bufsize": 1,
-    }
-    if config["via"] == "stdin":
-        popen_kwargs["stdin"] = subprocess.PIPE
-    else:
-        # Use DEVNULL so the agent never reads from parent's stdin (avoids EBADF under nohup/redirects).
-        popen_kwargs["stdin"] = subprocess.DEVNULL
-        cmd.append(prompt)
-
-    print(f"[{stage.upper()}] invoking {agent_name} (timeout={timeout}s)")
-    stdout_path, stderr_path = _build_log_paths(run_id)
-    try:
-        process = subprocess.Popen(cmd, **popen_kwargs)
-    except FileNotFoundError:
-        msg = f"{agent_name!r} binary not found. Install it or set PDCA_AGENT to a different backend."
-        return -1, "", msg, None, None
-
-    if config["via"] == "stdin" and process.stdin is not None:
-        process.stdin.write(prompt)
-        process.stdin.close()
-
-    stdout_chunks: list[str] = []
-    stderr_chunks: list[str] = []
-    with open(stdout_path, "w", encoding="utf-8") as stdout_handle, open(
-        stderr_path, "w", encoding="utf-8"
-    ) as stderr_handle:
-        stdout_handle.write(f"stage:     {stage.upper()}\nagent:     {agent_name}\n")
-        stdout_handle.write(f"timestamp: {time.strftime('%Y%m%d-%H%M%S')}\n\n")
-        stdout_handle.flush()
-        stderr_handle.write(f"stage:     {stage.upper()}\nagent:     {agent_name}\n")
-        stderr_handle.write(f"timestamp: {time.strftime('%Y%m%d-%H%M%S')}\n\n")
-        stderr_handle.flush()
-
-        stdout_thread = threading.Thread(
-            target=_stream_pipe_to_file,
-            args=(process.stdout, stdout_handle, stdout_chunks),
-            daemon=True,
-        )
-        stderr_thread = threading.Thread(
-            target=_stream_pipe_to_file,
-            args=(process.stderr, stderr_handle, stderr_chunks),
-            daemon=True,
-        )
-        stdout_thread.start()
-        stderr_thread.start()
-
-        timed_out = False
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            process.kill()
-
-        stdout_thread.join()
-        stderr_thread.join()
-
-    stdout = "".join(stdout_chunks)
-    stderr = "".join(stderr_chunks)
-    if timed_out:
-        timeout_message = f"timeout after {timeout}s"
-        if stderr:
-            stderr = f"{stderr}\n{timeout_message}"
+        cmd = list(config["cmd"])
+        timeout = _get_timeout(stage)
+        cwd = _agent_cwd(worktree_path)
+        # PYTHONUNBUFFERED=1 so child Python (e.g. uv run train.py) flushes stdout
+        # immediately instead of block-buffering when stdout is a pipe; otherwise
+        # stdout log only appears in one shot after the task finishes.
+        env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+        if agent_name == "opencode":
+            project_root_glob = str(PROJECT_ROOT.resolve().as_posix()) + "/**"
+            existing = {}
+            try:
+                if os.environ.get("OPENCODE_PERMISSION"):
+                    existing = json.loads(os.environ["OPENCODE_PERMISSION"])
+            except (json.JSONDecodeError, KeyError):
+                pass
+            ext_dir = dict(existing.get("external_directory", {}))
+            ext_dir[project_root_glob] = "allow"
+            env["OPENCODE_PERMISSION"] = json.dumps({"external_directory": ext_dir})
+        popen_kwargs: dict[str, Any] = {
+            "cwd": cwd,
+            "env": env,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
+            "bufsize": 1,
+        }
+        if config["via"] == "stdin":
+            popen_kwargs["stdin"] = subprocess.PIPE
         else:
-            stderr = timeout_message
-        return -1, stdout, stderr, stdout_path, stderr_path
+            # Use DEVNULL so the agent never reads from parent's stdin (avoids EBADF under nohup/redirects).
+            popen_kwargs["stdin"] = subprocess.DEVNULL
+            cmd.append(prompt)
 
-    return process.returncode, stdout, stderr, stdout_path, stderr_path
+        print(f"[{stage.upper()}] invoking {agent_name} (timeout={timeout}s)")
+        stdout_path, stderr_path = _build_log_paths(run_id)
+        try:
+            process = subprocess.Popen(cmd, **popen_kwargs)
+        except FileNotFoundError:
+            _mark_agent_unavailable(agent_name, "binary not found during launch")
+            continue
+        except OSError as exc:
+            _mark_agent_unavailable(agent_name, f"launch error: {exc}")
+            continue
+
+        if config["via"] == "stdin" and process.stdin is not None:
+            process.stdin.write(prompt)
+            process.stdin.close()
+
+        stdout_chunks: list[str] = []
+        stderr_chunks: list[str] = []
+        with open(stdout_path, "w", encoding="utf-8") as stdout_handle, open(
+            stderr_path, "w", encoding="utf-8"
+        ) as stderr_handle:
+            stdout_handle.write(f"stage:     {stage.upper()}\nagent:     {agent_name}\n")
+            stdout_handle.write(f"timestamp: {time.strftime('%Y%m%d-%H%M%S')}\n\n")
+            stdout_handle.flush()
+            stderr_handle.write(f"stage:     {stage.upper()}\nagent:     {agent_name}\n")
+            stderr_handle.write(f"timestamp: {time.strftime('%Y%m%d-%H%M%S')}\n\n")
+            stderr_handle.flush()
+
+            stdout_thread = threading.Thread(
+                target=_stream_pipe_to_file,
+                args=(process.stdout, stdout_handle, stdout_chunks),
+                daemon=True,
+            )
+            stderr_thread = threading.Thread(
+                target=_stream_pipe_to_file,
+                args=(process.stderr, stderr_handle, stderr_chunks),
+                daemon=True,
+            )
+            stdout_thread.start()
+            stderr_thread.start()
+
+            timed_out = False
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                process.kill()
+
+            stdout_thread.join()
+            stderr_thread.join()
+
+        stdout = "".join(stdout_chunks)
+        stderr = "".join(stderr_chunks)
+        if timed_out:
+            timeout_message = f"timeout after {timeout}s"
+            if stderr:
+                stderr = f"{stderr}\n{timeout_message}"
+            else:
+                stderr = timeout_message
+            _record_agent_exit(agent_name, -1)
+            return agent_name, -1, stdout, stderr, stdout_path, stderr_path
+
+        _record_agent_exit(agent_name, int(process.returncode))
+        return agent_name, int(process.returncode), stdout, stderr, stdout_path, stderr_path
 
 
 def _build_metrics_recovery_prompt(task: dict[str, Any]) -> str:
@@ -773,7 +961,7 @@ def _worker(stage: str, lane: str = "any") -> None:
                 summary_path_pre = _summary_json_path_in_cwd(worktree_path)
                 if summary_path_pre.exists():
                     summary_path_pre.unlink()
-            exit_code, stdout, stderr, stdout_log_path, stderr_log_path = _invoke_agent(
+            used_agent, exit_code, stdout, stderr, stdout_log_path, stderr_log_path = _invoke_agent(
                 prompt, stage, run_id, worktree_path=worktree_path
             )
 
@@ -876,7 +1064,7 @@ def _worker(stage: str, lane: str = "any") -> None:
                     WORKFLOW.mark_direct_code_run_failed(
                         seed_id,
                         run_id,
-                        _agent_failure_reason(exit_code, stdout, stderr),
+                        f"[agent={used_agent}] {_agent_failure_reason(exit_code, stdout, stderr)}",
                         task_path=task_path,
                         prompt_path=prompt_path_str,
                         log_path=str(stdout_log_path) if stdout_log_path else None,
@@ -886,7 +1074,7 @@ def _worker(stage: str, lane: str = "any") -> None:
                     WORKFLOW.mark_run_failed(
                         seed_id,
                         run_id,
-                        _agent_failure_reason(exit_code, stdout, stderr),
+                        f"[agent={used_agent}] {_agent_failure_reason(exit_code, stdout, stderr)}",
                         task_path=task_path, prompt_path=prompt_path_str,
                     )
                 print(f"[{stage.upper()}] task {task['task_id']} failed")
@@ -941,6 +1129,7 @@ def main() -> None:
         signal.signal(signal.SIGTERM, _signal_handler)
 
     ensure_queue_layout()
+    _initialize_agent_runtime_state()
     restored = restore_in_progress_tasks()
     total_restored = sum(restored.values())
     if total_restored:
@@ -949,8 +1138,17 @@ def main() -> None:
             f"(pd={restored['pd']}, ca={restored['ca']}, direct={restored['direct']})"
         )
     daemon_heartbeat()
-    agent = os.environ.get("PDCA_AGENT", "claude")
-    print(f"[daemon] starting pdca-system daemon — agent={agent}, workers=PD/CA-GPU/CA-AUX/DIRECT")
+    with _AGENT_HEALTH_LOCK:
+        active = _AGENT_RUNTIME_STATE.get("active")
+        available = list(_AGENT_RUNTIME_STATE.get("available", []))
+        unavailable = dict(_AGENT_RUNTIME_STATE.get("unavailable", {}))
+    print(
+        "[daemon] starting pdca-system daemon — "
+        f"agent={active}, available={available}, workers=PD/CA-GPU/CA-AUX/DIRECT"
+    )
+    if unavailable:
+        for name, reason in unavailable.items():
+            print(f"[daemon] agent unavailable: {name} ({reason})")
 
     pools: list[ThreadPoolExecutor] = []
     stage_specs = (

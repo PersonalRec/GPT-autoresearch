@@ -1,6 +1,6 @@
 # PDCA System
 
-A **portable orchestrator** for an autonomous Plan-Do–Check-Action loop. It drives an external AI agent (Claude, Codex, OpenCode, etc.) through file-based queues: the agent plans and implements in the **Plan-Do** stage, then adapts, runs, and evaluates in the **Check-Action** stage. State, logs, and worktrees live under `pdca_system/` so the host project stays clean.
+A **portable orchestrator** for an autonomous Plan-Do–Check-Action loop. It drives an external AI agent (Claude, Codex, Gemini, OpenCode, Kimi, etc.) through file-based queues: the agent plans and implements in the **Plan-Do** stage, then adapts, runs, and evaluates in the **Check-Action** stage. State, logs, and worktrees live under `pdca_system/` so the host project stays clean.
 
 **Designed to be copied into any repo.** Add `pdca_system` to your project, point the agent at the protocol, give it a prompt (e.g. “Improve X”, “Fix Y”), and run the daemon. The system adapts to your project’s layout and conventions via the protocol and stage docs you keep (or edit) inside `pdca_system/`.
 
@@ -30,7 +30,7 @@ All commands in this document are run from the **project root**. Use your projec
    - `config.py` — promotion threshold, default baseline branch, paths if you change them.
 5. **Run** the dashboard (optional) and daemon from the **project root**:
    - Dashboard: `uv run uvicorn pdca_system.web.app:app --reload` (or `python -m uvicorn pdca_system.web.app:app --reload`) → http://127.0.0.1:8000/pdca-system
-   - Daemon: `uv run pdca_system/daemon.py` (or `python -m pdca_system.daemon`; set `PDCA_AGENT=codex` / `PDCA_AGENT=opencode` / `PDCA_AGENT=kimi` for other backends)
+   - Daemon: `uv run pdca_system/daemon.py` (or `python -m pdca_system.daemon`; set `PDCA_AGENT=codex` / `PDCA_AGENT=gemini` / `PDCA_AGENT=opencode` / `PDCA_AGENT=kimi` for other backends)
 6. **Bootstrap:** Have your agent read `pdca_system/protocol.md`, create a seed from your prompt, queue it for Plan-Do, then start the daemon. The daemon will hand off tasks to the agent via the queue; do not run Plan-Do or Check-Action stages manually in the same session.
 
 Seeds flow: **queue/pd/** → Plan-Do → **queue/ca/** → Check-Action → **state/**. View runs and status in the dashboard.
@@ -80,7 +80,7 @@ All runtime data (queue, state, logs, worktrees) lives under `pdca_system/histor
 
 - **Protocol and stage docs** — Edit `protocol.md`, `PDCA-Plan-Do.md`, and `PDCA-Check-Action.md` to describe your repo’s layout, **canonical run command** (the script or module to run, e.g. `train.py` or `pytest`), success metric, and promotion rules. The daemon injects the **Python executable** (the one running the daemon) into CA prompts; the agent uses that Python with the canonical command defined in your protocol/docs.
 - **Config** — In `config.py` you can change the promotion threshold, the **target metric** used by Check-Action (`TARGET_METRIC_KEY`, `TARGET_METRIC_LOWER_IS_BETTER`, `TARGET_METRIC_LABEL` — e.g. `val_bpb` vs `val_accuracy`), the default baseline branch name, and (if needed) path overrides. The run must output that metric in stdout (or stderr) so the workflow can parse and record it. The dashboard and daemon prompt examples read these values from config, so editing only `config.py` (and docs) is enough to adapt the metric; no other code changes are required.
-- **Agent backend** — Set `PDCA_AGENT=codex`, `PDCA_AGENT=opencode`, or `PDCA_AGENT=kimi` (default is Claude). The daemon invokes the agent per task; ensure the agent can read the worktree and run commands as required by your protocol.
+- **Agent backend** — Set `PDCA_AGENT=codex`, `PDCA_AGENT=gemini`, `PDCA_AGENT=opencode`, or `PDCA_AGENT=kimi` (default is Claude). The daemon invokes the agent per task; ensure the agent can read the worktree and run commands as required by your protocol.
 
 No changes to the host project are required beyond adding the folder and dependencies; the system is a pure orchestrator and drives work *outside* `pdca_system` (e.g. your `train.py`, tests, or scripts).
 
