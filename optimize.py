@@ -902,14 +902,61 @@ class FixAccessibility2(OptimizationStrategy):
         return True
 
 
+class FixAccessibility3(OptimizationStrategy):
+    """Fix remaining two accessibility issues:
+
+    1. verified_pro_card links inherit #FF385C (3.51:1) from airbnb CSS global `a`.
+       Fix: add `text-gray-900` so class specificity overrides the type selector.
+
+    2. Locale switcher button has aria-label="Select language" but visible text is
+       "NL"/"EN" — WCAG 2.5.3 (label-in-name) requires visible text to be substring
+       of accessible name. Fix: include locale label in aria-label.
+    """
+
+    name = "fix_accessibility_3"
+    description = "Fix pro card link contrast + locale switcher label-in-name"
+
+    VERIFIED_CARD = TARGET_PROJECT / "templates" / "components" / "verified_pro_card.html.twig"
+    LANG_SWITCHER = TARGET_PROJECT / "templates" / "_language_switcher.html.twig"
+
+    CHANGES = [
+        (
+            VERIFIED_CARD,
+            'class="hover:text-{{ cardColor }}-600 transition-colors">',
+            'class="text-gray-900 hover:text-{{ cardColor }}-600 transition-colors">',
+        ),
+        (
+            LANG_SWITCHER,
+            'aria-label="{{ \'Select language\'|trans }}"',
+            'aria-label="{{ locale_labels[current_locale] }} - {{ \'Select language\'|trans }}"',
+        ),
+    ]
+
+    def apply(self):
+        applied = 0
+        for file_path, old, new in self.CHANGES:
+            content = file_path.read_text()
+            if old in content:
+                file_path.write_text(content.replace(old, new))
+                applied += 1
+        return applied > 0
+
+    def revert(self):
+        for file_path, old, new in self.CHANGES:
+            content = file_path.read_text()
+            if new in content:
+                file_path.write_text(content.replace(new, old))
+        return True
+
+
 def main():
     """Main entry point."""
     print("=" * 60)
-    print("Lighthouse Optimization - Experiment: fix_accessibility_2")
+    print("Lighthouse Optimization - Experiment: fix_accessibility_3")
     print("=" * 60)
     print()
 
-    summary = run_optimization(FixAccessibility2)
+    summary = run_optimization(FixAccessibility3)
     print_summary(summary)
 
 
