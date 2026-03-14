@@ -75,6 +75,13 @@ STAGE_DOCS = {
     "ca": ["PDCA-Check-Action.md"],
 }
 
+STAGE_SPECS = (
+    ("pd", "any", 3, "pdca-pd"),
+    ("ca", "gpu", 1, "pdca-ca-gpu"),
+    ("ca", "aux", 1, "pdca-ca-aux"),
+    ("direct", "any", 1, "pdca-direct"),
+)
+
 AGENT_CONFIGS: dict[str, dict[str, Any]] = {
     "claude": {"cmd": ["claude", "-p", "--verbose"], "via": "stdin"},
     "codex": {"cmd": ["codex", "exec", "-a", "never", "--sandbox", "workspace-write"], "via": "arg"},
@@ -1433,13 +1440,7 @@ def main() -> None:
             print(f"[daemon] agent unavailable: {name} ({reason})")
 
     pools: list[ThreadPoolExecutor] = []
-    stage_specs = (
-        ("pd", "any", 2, "pdca-pd"),
-        ("ca", "gpu", 1, "pdca-ca-gpu"),
-        ("ca", "aux", 1, "pdca-ca-aux"),
-        ("direct", "any", 1, "pdca-direct"),
-    )
-    for stage, lane, worker_count, prefix in stage_specs:
+    for stage, lane, worker_count, prefix in STAGE_SPECS:
         pool = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix=prefix)
         pools.append(pool)
         for _ in range(worker_count):

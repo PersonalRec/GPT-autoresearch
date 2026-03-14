@@ -1155,8 +1155,7 @@ class WorkflowService:
             run.stage is StageName.ca
             and seed.ralph_loop_enabled
             and seed.seed_id != BASELINE_SEED_ID
-            and task_payload.get("merge_resolution") is not True
-            and task_payload.get("metrics_recovery") is not True
+            and (task_payload.get("merge_resolution") is True or task_payload.get("metrics_recovery") is True)
         ):
             self._ralph_try_restore_worktree(seed, run.summary.get("commit_sha_before_pd"))
             if self._ralph_should_requeue(seed.seed_id):
@@ -1355,6 +1354,26 @@ class WorkflowService:
                 and seed.seed_id != BASELINE_SEED_ID
             ):
                 self._ralph_try_restore_worktree(seed, run.summary.get("commit_sha_before_pd"))
+                if self._ralph_should_requeue(seed.seed_id):
+                    try:
+                        self.queue_pd(seed.seed_id)
+                        self.seed_repo.append_event(
+                            seed.seed_id,
+                            "ralph.requeued",
+                            "Ralph loop queued the next Plan-Do run after Check-Action (no metrics).",
+                        )
+                    except (RuntimeError, GitCommandError) as exc:
+                        self.seed_repo.append_event(
+                            seed.seed_id,
+                            "ralph.requeue_failed",
+                            f"Ralph loop could not queue the next Plan-Do run after Check-Action (no metrics): {exc}",
+                        )
+                else:
+                    self.seed_repo.append_event(
+                        seed.seed_id,
+                        "ralph.max_reached",
+                        "Ralph loop max iterations reached; not queuing another Plan-Do run.",
+                    )
             return run
         seed.latest_metrics = metrics
         seed.latest_signal = signal
