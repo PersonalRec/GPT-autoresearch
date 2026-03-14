@@ -67,7 +67,7 @@ This distinction matters for agent strategy: bounded problems eventually "solve"
                     │         Challenge Repo            │
                     │         (public/shared)           │
                     │                                   │
-                    │  - mutable files (e.g. train.py)  │
+                    │  - mutable state (e.g. train.py)  │
                     │  - agent instructions              │
                     │  - leaderboard / history           │
                     │  - problem description             │
@@ -94,8 +94,8 @@ This distinction matters for agent strategy: bounded problems eventually "solve"
                      │                     │
                      │ - serial eval queue │
                      │ - has scoring code  │
-                     │ - rebase → eval →   │
-                     │   merge or discard  │
+                     │ - eval → merge or   │
+                     │   discard           │
                      └─────────────────────┘
 ```
 
@@ -107,10 +107,9 @@ This is an ordinary git repo (typically on GitHub). It contains:
 challenge-repo/
 ├── problem.yaml             # Problem definition (what to optimize, constraints, score direction)
 ├── agent_instructions.md    # Guidance for agents (like program.md but generic)
-├── leaderboard.md           # Auto-updated scoreboard
-├── history.tsv              # Full experiment log (commit, score, status, description)
+├── leaderboard.md           # Auto-updated scoreboard (exported from evaluator DB)
 │
-├── src/                     # The mutable files agents can edit
+├── state/                   # The mutable files agents can edit
 │   └── train.py             # (or whatever the problem's mutable state is)
 │
 └── context/                 # Read-only files agents can reference
@@ -128,7 +127,7 @@ description: >
   The evaluation metric is val_bpb — lower is better.
 
 mutable:
-  - src/train.py
+  - state/train.py
 
 readonly:
   - context/prepare.py
@@ -142,7 +141,7 @@ score:
 constraints:
   - "Training must complete within the 5-minute time budget"
   - "Only packages in pyproject.toml are available"
-  - "Must not modify files outside of src/"
+  - "Must not modify files outside of state/"
 ```
 
 Another example — a bounded score:
@@ -162,29 +161,70 @@ score:
 ```markdown
 # How to Participate
 
-1. Clone this repo and create a branch: `proposals/<your-name>/<short-description>`
+1. Pull the latest main and create a branch: `proposals/<your-name>/<short-description>`
 2. Read `problem.yaml` to understand what you're optimizing
 3. Read the files in `context/` for background
-4. Read `history.tsv` and `leaderboard.md` to see what's been tried and what worked
+4. Read `leaderboard.md` to see what's been tried and what worked
 5. Modify ONLY the files listed under `mutable` in `problem.yaml`
 6. Commit with a clear message explaining your approach
 7. Push your branch (or open a PR)
 
-The evaluator will automatically pick up your branch, rebase it onto current main,
-score it, and either merge (if improved) or discard (if not).
-
-If your branch can't rebase cleanly onto current main, it will be discarded.
-Pull the latest main and try again.
+The evaluator will automatically pick up your branch, score it, and either
+merge (if improved) or discard (if not).
 ```
 
-**`history.tsv`** is the experiment log, updated by the evaluator after each run:
+### Evaluation History (SQLite)
 
+The evaluator stores all evaluation history in a SQLite database. This is the source of truth for what was tried, what scored what, and what the current best state is. The DB file lives in the gitignored `evaluator/` directory — agents never see it directly. Instead, the evaluator exports a public `leaderboard.md` to the repo after each evaluation.
+
+Each problem gets its own DB file, created once when the evaluator is first set up. If you run multiple problems from the same repo, each problem's `evaluator/` directory has its own `history.db`.
+
+**Schema:**
+
+```sql
+CREATE TABLE evaluations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    commit_sha      TEXT NOT NULL,
+    branch          TEXT NOT NULL,
+    score           REAL,                -- NULL if crashed
+    status          TEXT NOT NULL,        -- 'baseline', 'accepted', 'rejected', 'crash'
+    description     TEXT,                -- agent's commit message / explanation
+    submitted_at    TEXT,                -- ISO 8601
+    evaluated_at    TEXT,                -- ISO 8601
+    duration_seconds REAL,
+    error_message   TEXT,                -- NULL unless crashed
+    metrics_json    TEXT                 -- secondary metrics as JSON blob
+);
+
+CREATE TABLE incumbent (
+    id              INTEGER PRIMARY KEY CHECK (id = 1),  -- singleton row
+    commit_sha      TEXT NOT NULL,
+    score           REAL NOT NULL,
+    promoted_at     TEXT NOT NULL         -- ISO 8601
+);
 ```
-commit	branch	score	status	description	timestamp
-a1b2c3d	main	0.997900	baseline	initial baseline	2026-03-13T10:00:00Z
-b2c3d4e	proposals/agent-1/higher-lr	0.993200	accepted	increase LR to 0.04	2026-03-13T10:08:00Z
-c3d4e5f	proposals/agent-2/gelu	1.005000	rejected	switch to GeLU activation	2026-03-13T10:12:00Z
-d4e5f6g	proposals/agent-3/wider	0.000000	crash	double model width (OOM)	2026-03-13T10:15:00Z
+
+The `evaluations` table is append-only — every proposal ever scored, whether accepted or rejected. The `incumbent` table is a single row tracking the current best state. On a successful promotion, the evaluator updates `incumbent` and inserts an `evaluations` row with status `'accepted'` in the same transaction.
+
+**What gets gitignored:** The entire `evaluator/` directory, including `history.db`, scoring code, and any private test data. Agents see only the committed `leaderboard.md` and the repo's git log.
+
+**`leaderboard.md`** is the public-facing view, exported from the DB by the evaluator after each run:
+
+```markdown
+# Leaderboard
+
+| # | Score | Branch | Description | When |
+|---|-------|--------|-------------|------|
+| 1 | 0.9932 | proposals/agent-1/higher-lr | increase LR to 0.04 | 2026-03-13 10:08 |
+| 2 | 0.9979 | main | initial baseline | 2026-03-13 10:00 |
+
+## Recent Attempts
+
+| Score | Status | Branch | Description | When |
+|-------|--------|--------|-------------|------|
+| 0.9932 | accepted | proposals/agent-1/higher-lr | increase LR to 0.04 | 10:08 |
+| 1.0050 | rejected | proposals/agent-2/gelu | switch to GeLU activation | 10:12 |
+| crash | crash | proposals/agent-3/wider | double model width (OOM) | 10:15 |
 ```
 
 ### The Evaluator
@@ -193,23 +233,22 @@ The evaluator is a separate, private system that the problem owner runs. It watc
 
 #### Evaluation is Serial
 
-This is a key design decision. The evaluation queue is **serial** — one proposal at a time, always against the true latest state of main. Here's why:
+This is a key design decision. The evaluation queue is **serial** — one proposal at a time. Here's why:
 
-The only thing that matters is: "does this proposal make main better?" To answer that, you must evaluate the proposal *as it would exist on current main*. If main has moved since the agent started working, the proposal must be rebased onto current main before evaluation. If it can't rebase cleanly, discard it — the world moved on, try again.
+The only thing that matters is: "does this proposal beat the current best?" Since we evaluate proposals one at a time, the answer is always unambiguous. There's no race condition, no stale comparison, no wasted work. The score you record is the score that matters.
 
-This means parallel evaluation (multiple proposals being scored simultaneously in worktrees) wastes work. While you're evaluating proposal A, proposal B might get merged, and now A's evaluation is against a stale base. You'd have to rebase and re-evaluate anyway.
+Parallel evaluation (scoring multiple proposals simultaneously) wastes work: while you're evaluating proposal A, proposal B might get merged, and now A's score is against a stale baseline. You'd have to re-evaluate anyway.
 
 **The evaluation loop is simple:**
 
 ```
 FOREVER:
   1. Pick the next proposal branch from the queue
-  2. Rebase it onto current main
-  3. If rebase fails → discard, record in history, continue
-  4. Run the scoring function on the rebased code
-  5. If the score improved → merge to main, update history + leaderboard, push
-  6. If the score didn't improve → discard, record in history
-  7. If it crashed → record as crash in history
+  2. Check out the proposal branch
+  3. Run the scoring function
+  4. If the score beats the current incumbent → merge to main, update DB + leaderboard, push
+  5. If the score didn't improve → discard, record in DB
+  6. If it crashed → record as crash in DB
 ```
 
 If a proposal doesn't make things incrementally better, you discard it forever. No second chances, no "close enough," no combining. The rule is binary: better or gone.
@@ -226,24 +265,25 @@ The evaluator lives right in the challenge repo, just gitignored:
 challenge-repo/
 ├── .gitignore              # includes: evaluator/
 ├── problem.yaml
-├── src/train.py
+├── state/train.py
 ├── context/prepare.py
 ├── agent_instructions.md
-├── history.tsv
+├── leaderboard.md
 │
 └── evaluator/              # GITIGNORED — only on the evaluator's machine
     ├── score.sh            # the actual scoring script
     ├── evaluate_loop.sh    # the serial evaluation loop
+    ├── history.db          # SQLite evaluation history (created once, append-only)
     └── data/               # private test data, if any
 ```
 
-When you clone this repo on the machine that runs evaluations, you create the `evaluator/` directory locally. It's gitignored, so agents who clone the repo don't get it. The evaluator polls for new branches, rebases them, runs `score.sh`, and merges or discards.
+When you clone this repo on the machine that runs evaluations, you create the `evaluator/` directory locally. It's gitignored, so agents who clone the repo don't get it. The evaluator polls for new branches, scores them via `score.sh`, and merges or discards.
 
 This is the simplest deployment. One machine, one repo, the evaluator is just some gitignored files. Good for single-user or small-team use. Good for getting started.
 
 **Option B: GitHub Actions**
 
-A workflow triggers on PRs. The scoring code lives in a private repo (fetched via secret token) or as encrypted GitHub Action secrets. The workflow rebases the PR, scores it, posts the result as a comment, and auto-merges or closes.
+A workflow triggers on PRs. The scoring code lives in a private repo (fetched via secret token) or as encrypted GitHub Action secrets. The workflow scores the PR, posts the result as a comment, and auto-merges or closes. (In the PR model, a rebase onto main before scoring may be needed if main has moved since the PR was opened.)
 
 ```yaml
 # .github/workflows/evaluate.yml
@@ -261,8 +301,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha }}
-      - name: Rebase onto main
-        run: git rebase origin/main
       - name: Fetch scoring code
         uses: actions/checkout@v4
         with:
@@ -294,20 +332,17 @@ PARALLEL (unlimited):
   - Agents thinking about what to try
   - Agents writing code
   - Agents pushing branches
-  - Agents reading history to learn what worked
+  - Agents reading the leaderboard to learn what worked
 
 SERIAL (one at a time):
-  - Rebase proposal onto current main
+  - Check out proposal branch
   - Run scoring function
+  - Compare to incumbent score
   - Merge or discard
-  - Update history
+  - Update DB and leaderboard
 ```
 
-When main advances (a proposal gets merged), every pending proposal in the queue is now based on a stale version. The evaluation loop handles this by rebasing each proposal onto current main right before evaluating it. If the rebase fails (merge conflict), that proposal is discarded — the agent's changes are incompatible with what was accepted in the meantime.
-
-This means if you're an agent and you pushed a branch 30 minutes ago, by the time the evaluator gets to it, main might have advanced 6 times. Your branch will be rebased onto that new main. If it still applies cleanly and still improves the score — congratulations, you're in. If not, your work is discarded.
-
-This is harsh but correct. No stale evaluations, no optimistic merges that might interact badly. The score you see in the history is always the score on the exact state that was merged.
+Since evaluation is serial, the incumbent only changes between evaluations, never during one. This eliminates race conditions entirely. Every evaluation produces a clean, unambiguous comparison: this proposal's score vs. the current best score.
 
 ## What the Current System Does Well (and What We Keep)
 
@@ -324,10 +359,9 @@ This is harsh but correct. No stale evaluations, no optimistic merges that might
 | Agents | 1, serial, same machine | N, parallel, distributed |
 | Scoring | Agent runs eval and reads score | Evaluator runs privately, agent never sees scoring code |
 | Submission | Agent modifies file in place, git commit | Agent pushes branch / opens PR |
-| State management | Single branch, git reset on failure | Main = best state, proposals rebase onto main |
+| State management | Single branch, git reset on failure | Main = best state, proposals scored against incumbent |
 | Evaluation | Inline in the agent loop | Separate private service, serial queue |
-| Stale proposals | N/A (serial) | Rebase onto current main; conflict = discard |
-| History | Untracked results.tsv | Committed leaderboard + history in the challenge repo |
+| History | Untracked results.tsv | SQLite DB (private) + committed leaderboard (public) |
 
 ## Concrete Plan: From Here to There
 
@@ -337,19 +371,20 @@ This is harsh but correct. No stale evaluations, no optimistic merges that might
 
 1. **Restructure this repo as a challenge repo:**
    - Create `problem.yaml` with the ML problem definition (no scoring code)
-   - Move `train.py` into `src/`
+   - Move `train.py` into `state/`
    - Move `prepare.py` into `context/`
    - Rewrite `program.md` → `agent_instructions.md` with the generic protocol (clone, branch, modify, push)
-   - Add empty `history.tsv` and `leaderboard.md`
+   - Add empty `leaderboard.md`
    - Add `evaluator/` to `.gitignore`
 
 2. **Create the gitignored evaluator:**
-   - `evaluator/score.sh` — runs `uv run src/train.py`, extracts `val_bpb`, prints it
-   - `evaluator/evaluate_loop.sh` — the serial loop: poll for new branches, rebase, run score.sh, merge or discard, update history.tsv
+   - `evaluator/score.sh` — runs `uv run state/train.py`, extracts `val_bpb`, writes result as JSON
+   - `evaluator/evaluate_loop.sh` — the serial loop: poll for new branches, check out, run score.sh, merge or discard, update SQLite DB + export leaderboard.md
+   - `evaluator/history.db` — created once on first run, append-only after that
 
-3. **Test end-to-end:** Manually create a proposal branch with a change to `src/train.py`, run the evaluate loop, see it get scored and either merged or rejected.
+3. **Test end-to-end:** Manually create a proposal branch with a change to `state/train.py`, run the evaluate loop, see it get scored and either merged or rejected.
 
-**Deliverable:** The ML training optimization works through the new system. An agent (or human) can make changes to `src/train.py`, push a branch, and the evaluator scores it and merges if better. The scoring code is in `evaluator/` which is gitignored.
+**Deliverable:** The ML training optimization works through the new system. An agent (or human) can make changes to `state/train.py`, push a branch, and the evaluator scores it and merges if better. The scoring code and history DB are in `evaluator/` which is gitignored.
 
 ### Phase 2: GitHub Actions Evaluator
 
@@ -358,7 +393,7 @@ This is harsh but correct. No stale evaluations, no optimistic merges that might
 1. Write a GitHub Actions workflow that triggers on PRs
 2. Use `concurrency` to enforce serial evaluation
 3. The workflow fetches scoring code from a private repo (using a secret token)
-4. It rebases the PR onto main, runs the evaluation, posts the score as a PR comment
+4. It runs the evaluation and posts the score as a PR comment (rebasing onto main if needed)
 5. If the score improves, it auto-merges and updates the leaderboard
 6. If not, it closes the PR with the score
 
@@ -394,7 +429,7 @@ This is harsh but correct. No stale evaluations, no optimistic merges that might
 
 ### 1. Why serial evaluation?
 
-Parallel evaluation (scoring multiple proposals simultaneously) seems like it would be faster. But it wastes work: while proposal A is being evaluated, proposal B might get merged, invalidating A's evaluation. You'd have to rebase and re-evaluate A anyway.
+Parallel evaluation (scoring multiple proposals simultaneously) seems like it would be faster. But it wastes work: while proposal A is being evaluated, proposal B might get merged, invalidating A's score comparison. Serial means the incumbent never changes during an evaluation — the comparison is always clean.
 
 Serial evaluation means: always evaluate against the true latest state. No wasted evaluations, no optimistic merges that might interact badly, no stale scores in the history.
 
@@ -419,11 +454,11 @@ If a proposal doesn't improve the score, it's gone. No "almost" list, no "try co
 
 - Agents can see the history. If an idea was close, an agent can read about it and try a refined version.
 - The search space is infinite. Spending time revisiting failed proposals is worse than trying new ideas.
-- It keeps the system stateless. The only state is: main (current best) + history (what was tried). No complex bookkeeping.
+- It keeps the system simple. The only state is: main (current best) + the evaluation DB (what was tried). No complex bookkeeping.
 
 ### 5. What's the minimal viable system?
 
-A challenge repo with `problem.yaml`, one mutable file, `agent_instructions.md`, and a gitignored `evaluator/` directory containing a scoring script and a shell-script loop that polls for branches.
+A challenge repo with `problem.yaml`, one mutable file in `state/`, `agent_instructions.md`, and a gitignored `evaluator/` directory containing a scoring script, a SQLite DB, and a shell-script loop that polls for branches.
 
 One agent (a Claude Code session), one evaluator (a shell script on a machine with a GPU). That's the whole system.
 
@@ -436,9 +471,9 @@ One agent (a Claude Code session), one evaluator (a shell script on a machine wi
 
 ## First Steps
 
-1. Restructure this repo as a challenge repo (problem.yaml, src/, context/, agent_instructions.md)
+1. Restructure this repo as a challenge repo (problem.yaml, state/, context/, agent_instructions.md)
 2. Add `evaluator/` to .gitignore
 3. Write `evaluator/score.sh` for the ML use case
-4. Write `evaluator/evaluate_loop.sh` — the serial poll-rebase-score-merge loop
+4. Write `evaluator/evaluate_loop.sh` — the serial poll-score-merge loop with SQLite history
 5. Test end-to-end with a manual proposal branch
 6. Create a second non-ML example to prove generality
