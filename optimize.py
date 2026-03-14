@@ -863,11 +863,11 @@ class FixAccessibility2(OptimizationStrategy):
             '</h3>',
             '</h2>',
         ),
-        # 4. Fix JS-generated touch targets for popular-services carousel
+        # 4. Fix JS-generated touch targets for popular-services carousel (use inline styles)
         (
             POPULAR_CTRL,
-            "button.className = 'group relative flex items-center justify-center'",
             "button.className = 'group relative flex items-center justify-center w-11 h-11'",
+            "button.className = 'group relative flex items-center justify-center'\n      button.style.minWidth = '44px'\n      button.style.minHeight = '44px'",
         ),
     ]
 
