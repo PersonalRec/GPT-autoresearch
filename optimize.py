@@ -1004,14 +1004,48 @@ class FixAccessibility4(OptimizationStrategy):
         return True
 
 
+class FixAccessibility5(OptimizationStrategy):
+    """Fix last remaining color-contrast failure: Accept All Cookies button.
+
+    The Accept button has bg-primary-600 (#16a34a) with white text, giving 3.1:1
+    contrast (needs 4.5:1 for 16px normal). Change to bg-primary-700 (#15803d)
+    which gives 5.0:1 on white. Also fix the save preferences button in the modal.
+    """
+
+    name = "fix_accessibility_5"
+    description = "Fix Accept All Cookies button contrast (bg-primary-600→700)"
+
+    COOKIE = TARGET_PROJECT / "templates" / "components" / "cookie-banner.html.twig"
+
+    OLD = 'class="px-6 py-2.5 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 transition-colors">'
+    NEW = 'class="px-6 py-2.5 bg-primary-700 text-white rounded-lg font-medium hover:bg-primary-800 transition-colors">'
+
+    OLD2 = 'class="px-6 py-2.5 bg-primary-600 text-white rounded-lg font-medium hover:bg-primary-700 transition-colors flex-1">'
+    NEW2 = 'class="px-6 py-2.5 bg-primary-700 text-white rounded-lg font-medium hover:bg-primary-800 transition-colors flex-1">'
+
+    def apply(self):
+        content = self.COOKIE.read_text()
+        if self.OLD not in content and self.OLD2 not in content:
+            return False
+        content = content.replace(self.OLD, self.NEW).replace(self.OLD2, self.NEW2)
+        self.COOKIE.write_text(content)
+        return True
+
+    def revert(self):
+        content = self.COOKIE.read_text()
+        content = content.replace(self.NEW, self.OLD).replace(self.NEW2, self.OLD2)
+        self.COOKIE.write_text(content)
+        return True
+
+
 def main():
     """Main entry point."""
     print("=" * 60)
-    print("Lighthouse Optimization - Experiment: fix_accessibility_4")
+    print("Lighthouse Optimization - Experiment: fix_accessibility_5")
     print("=" * 60)
     print()
 
-    summary = run_optimization(FixAccessibility4)
+    summary = run_optimization(FixAccessibility5)
     print_summary(summary)
 
 
