@@ -10,10 +10,12 @@ This is an AutoAnything challenge. You are optimizing a GPT training script for 
 4. Read `leaderboard.md` to see what's been tried and what worked
 5. Modify ONLY the files listed under `mutable` in `problem.yaml` (currently just `state/train.py`)
 6. Commit with a clear message explaining your approach
-7. Push your branch (or open a PR)
+7. Push your branch, or open a PR targeting master
 
-The evaluator will automatically pick up your branch, score it, and either
-merge (if improved) or discard (if not).
+The evaluator will automatically pick up your branch or PR, score it, and either
+merge (if improved) or discard/close (if not). If the evaluator is running in
+webhook mode, it will comment on your PR with the score and comparison to the
+current incumbent.
 
 ## What You Can Change
 

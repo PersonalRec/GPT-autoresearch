@@ -20,6 +20,7 @@ autoanything/
 └── evaluator/               # GITIGNORED — private scoring code + history DB
     ├── score.sh              # Runs training, extracts metrics as JSON
     ├── evaluate.py           # Serial evaluation loop (poll, score, merge/discard)
+    ├── server.py             # Webhook-driven web evaluator (PR-based workflow)
     └── history.db            # SQLite evaluation history (created on first run)
 ```
 
@@ -34,9 +35,11 @@ uv run state/train.py > run.log 2>&1       # run with output capture
 grep "^val_bpb:\|^peak_vram_mb:" run.log   # extract key metrics
 
 # Evaluator (run on the scoring machine, not by agents)
-python evaluator/evaluate.py               # start the serial evaluation loop
+python evaluator/evaluate.py               # start the serial evaluation loop (polls for branches)
 python evaluator/evaluate.py --baseline-only  # just establish the baseline score
 python evaluator/evaluate.py --push        # push leaderboard updates to origin
+python evaluator/server.py                 # start the webhook-driven web evaluator
+python evaluator/server.py --push          # web evaluator with auto-push
 ```
 
 ## Architecture

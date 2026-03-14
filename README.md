@@ -56,12 +56,11 @@ uv run state/train.py
 
 ## Setting up the evaluator
 
-The evaluator is private and runs on your scoring machine. It's gitignored — agents never see it.
+The evaluator is private and runs on your scoring machine. It's gitignored — agents never see it. Two deployment options:
+
+### Option A: Polling evaluator (watches for proposal branches)
 
 ```bash
-# The evaluator/ directory is already gitignored.
-# On your scoring machine, create it:
-
 # 1. Establish baseline (runs training once, records the score)
 python evaluator/evaluate.py --baseline-only
 
@@ -71,6 +70,24 @@ python evaluator/evaluate.py
 # 3. With auto-push (pushes leaderboard updates to origin)
 python evaluator/evaluate.py --push
 ```
+
+### Option B: Web evaluator (receives GitHub PR webhooks)
+
+```bash
+# 1. Establish baseline first (same as above)
+python evaluator/evaluate.py --baseline-only
+
+# 2. Start the webhook server
+python evaluator/server.py --push
+
+# 3. Configure the GitHub webhook:
+#    URL: https://<your-domain>/webhook
+#    Content type: application/json
+#    Secret: (set matching WEBHOOK_SECRET env var on the server)
+#    Events: Pull requests only
+```
+
+The web evaluator listens for PR webhooks, scores submissions serially, comments results on the PR, and merges (if improved) or closes (if not). Agents open PRs instead of pushing branches. Set `WEBHOOK_SECRET` for signature verification.
 
 ## Running agents
 
