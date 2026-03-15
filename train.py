@@ -19,9 +19,39 @@ import torch.nn.functional as F
 
 from kernels import get_kernel
 cap = torch.cuda.get_device_capability()
-# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
-repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
-fa3 = get_kernel(repo).flash_attn_interface
+
+USE_FLEX_ATTENTION = cap[0] >= 10  # Blackwell (SM100) and future architectures
+
+if USE_FLEX_ATTENTION:
+    from functools import partial
+    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+    _flex_attention_compiled = torch.compile(
+        partial(flex_attention, kernel_options={"BACKEND": "FLASH"}),
+        dynamic=False,
+    )
+    print("Using FlexAttention with FA4 backend (Blackwell)")
+else:
+    # varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
+    repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
+    fa3 = get_kernel(repo).flash_attn_interface
+    print(f"Using FA3 from {repo}")
+
+if USE_FLEX_ATTENTION:
+    def _causal_mask(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    def _sliding_window_mask(window_size):
+        def mask_fn(b, h, q_idx, kv_idx):
+            return (q_idx >= kv_idx) & (q_idx - kv_idx < window_size)
+        return mask_fn
+
+    def _build_flex_block_mask(window_size_tuple, B, n_head, T):
+        window = window_size_tuple[0]
+        if window <= 0 or window >= T:
+            mask_fn = _causal_mask
+        else:
+            mask_fn = _sliding_window_mask(window)
+        return create_block_mask(mask_fn, B=B, H=n_head, Q_LEN=T, KV_LEN=T, device="cuda")
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
@@ -74,7 +104,7 @@ class CausalSelfAttention(nn.Module):
         self.ve_gate_channels = 32
         self.ve_gate = nn.Linear(self.ve_gate_channels, self.n_kv_head, bias=False) if has_ve(layer_idx, config.n_layer) else None
 
-    def forward(self, x, ve, cos_sin, window_size):
+    def forward(self, x, ve, cos_sin, window_size, block_mask=None):
         B, T, C = x.size()
         q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
         k = self.c_k(x).view(B, T, self.n_kv_head, self.head_dim)
@@ -90,7 +120,14 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        if USE_FLEX_ATTENTION:
+            # FlexAttention expects (B, H, T, D) not (B, T, H, D)
+            q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+            y = _flex_attention_compiled(q, k, v, block_mask=block_mask, enable_gqa=True)
+            y = y.transpose(1, 2)
+        else:
+            y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+
         y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
@@ -115,8 +152,8 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config, layer_idx)
         self.mlp = MLP(config)
 
-    def forward(self, x, ve, cos_sin, window_size):
-        x = x + self.attn(norm(x), ve, cos_sin, window_size)
+    def forward(self, x, ve, cos_sin, window_size, block_mask=None):
+        x = x + self.attn(norm(x), ve, cos_sin, window_size, block_mask)
         x = x + self.mlp(norm(x))
         return x
 
@@ -126,6 +163,7 @@ class GPT(nn.Module):
         super().__init__()
         self.config = config
         self.window_sizes = self._compute_window_sizes(config)
+        self._flex_block_masks = None  # Lazily built on first forward (needs CUDA device)
         self.transformer = nn.ModuleDict({
             "wte": nn.Embedding(config.vocab_size, config.n_embd),
             "h": nn.ModuleList([Block(config, i) for i in range(config.n_layer)]),
@@ -270,13 +308,20 @@ class GPT(nn.Module):
         assert T <= self.cos.size(1)
         cos_sin = self.cos[:, :T], self.sin[:, :T]
 
+        # Build block masks once on first forward pass (model starts on meta device)
+        if USE_FLEX_ATTENTION and self._flex_block_masks is None:
+            unique_windows = set(self.window_sizes)
+            cache = {ws: _build_flex_block_mask(ws, B, self.config.n_head, T) for ws in unique_windows}
+            self._flex_block_masks = [cache[ws] for ws in self.window_sizes]
+
         x = self.transformer.wte(idx)
         x = norm(x)
         x0 = x
         for i, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
             ve = self.value_embeds[str(i)](idx) if str(i) in self.value_embeds else None
-            x = block(x, ve, cos_sin, self.window_sizes[i])
+            block_mask = self._flex_block_masks[i] if USE_FLEX_ATTENTION else None
+            x = block(x, ve, cos_sin, self.window_sizes[i], block_mask)
         x = norm(x)
 
         softcap = 15
@@ -510,7 +555,7 @@ def get_gpu_peak_flops():
     props = torch.cuda.get_device_properties(0)
     num_sms = props.multi_processor_count
     cap = torch.cuda.get_device_capability()
-    tflops_per_sm = {7: 1.6, 8: 2.2, 9: 7.5}.get(cap[0], 2.5)
+    tflops_per_sm = {7: 1.6, 8: 2.2, 9: 7.5, 10: 17.6}.get(cap[0], 2.5)
     estimated_flops = num_sms * tflops_per_sm * 1e12
     print(f"WARNING: Unknown GPU '{gpu_name}' (CC {cap[0]}.{cap[1]}, {num_sms} SMs)")
     print(f"  Estimated {estimated_flops/1e12:.1f} TFLOPS bf16 peak — MFU% will be approximate.")
