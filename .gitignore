@@ -21,3 +21,8 @@ dev/
 
 # Results file
 results.tsv
+
+# Collaboration
+.autoresearch-key
+uv.lock
+run.log

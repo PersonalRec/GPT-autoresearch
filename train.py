@@ -7,6 +7,7 @@ Usage: uv run train.py
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TORCHINDUCTOR_FX_GRAPH_CACHE"] = "1"      # persistent compile cache across runs
 
 import gc
 import math
@@ -16,12 +17,49 @@ from dataclasses import dataclass, asdict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch._inductor.config as inductor_config
+
+# B200 (Blackwell / SM100) torch.compile optimizations
+inductor_config.coordinate_descent_tuning = True       # fine-tune tile sizes per kernel
+inductor_config.max_autotune_gemm_backends = "CUTLASS,Triton,ATen"  # include CUTLASS SM100 kernels
+inductor_config.epilogue_fusion = True                 # fuse pointwise ops into matmul epilogues
+inductor_config.aggressive_fusion = True               # fuse more ops into fewer kernels
 
 from kernels import get_kernel
 cap = torch.cuda.get_device_capability()
-# varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
-repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
-fa3 = get_kernel(repo).flash_attn_interface
+
+USE_FLEX_ATTENTION = cap[0] >= 10  # Blackwell (SM100) and future architectures
+
+if USE_FLEX_ATTENTION:
+    from functools import partial
+    from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+    _flex_attention_compiled = torch.compile(
+        partial(flex_attention, kernel_options={"BACKEND": "FLASH"}),
+        dynamic=False,
+    )
+    print("Using FlexAttention with FA4 backend (Blackwell)")
+else:
+    # varunneal's FA3 is Hopper only, use kernels-community on non-Hopper GPUs
+    repo = "varunneal/flash-attention-3" if cap == (9, 0) else "kernels-community/flash-attn3"
+    fa3 = get_kernel(repo).flash_attn_interface
+    print(f"Using FA3 from {repo}")
+
+if USE_FLEX_ATTENTION:
+    def _causal_mask(b, h, q_idx, kv_idx):
+        return q_idx >= kv_idx
+
+    def _sliding_window_mask(window_size):
+        def mask_fn(b, h, q_idx, kv_idx):
+            return (q_idx >= kv_idx) & (q_idx - kv_idx < window_size)
+        return mask_fn
+
+    def _build_flex_block_mask(window_size_tuple, B, n_head, T):
+        window = window_size_tuple[0]
+        if window <= 0 or window >= T:
+            mask_fn = _causal_mask
+        else:
+            mask_fn = _sliding_window_mask(window)
+        return create_block_mask(mask_fn, B=B, H=n_head, Q_LEN=T, KV_LEN=T, device="cuda")
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
 
@@ -74,7 +112,7 @@ class CausalSelfAttention(nn.Module):
         self.ve_gate_channels = 32
         self.ve_gate = nn.Linear(self.ve_gate_channels, self.n_kv_head, bias=False) if has_ve(layer_idx, config.n_layer) else None
 
-    def forward(self, x, ve, cos_sin, window_size):
+    def forward(self, x, ve, cos_sin, window_size, block_mask=None):
         B, T, C = x.size()
         q = self.c_q(x).view(B, T, self.n_head, self.head_dim)
         k = self.c_k(x).view(B, T, self.n_kv_head, self.head_dim)
@@ -90,7 +128,14 @@ class CausalSelfAttention(nn.Module):
         q, k = apply_rotary_emb(q, cos, sin), apply_rotary_emb(k, cos, sin)
         q, k = norm(q), norm(k)
 
-        y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+        if USE_FLEX_ATTENTION:
+            # FlexAttention expects (B, H, T, D) not (B, T, H, D)
+            q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+            y = _flex_attention_compiled(q, k, v, block_mask=block_mask, enable_gqa=True)
+            y = y.transpose(1, 2)
+        else:
+            y = fa3.flash_attn_func(q, k, v, causal=True, window_size=window_size)
+
         y = y.contiguous().view(B, T, -1)
         y = self.c_proj(y)
         return y
@@ -115,8 +160,8 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config, layer_idx)
         self.mlp = MLP(config)
 
-    def forward(self, x, ve, cos_sin, window_size):
-        x = x + self.attn(norm(x), ve, cos_sin, window_size)
+    def forward(self, x, ve, cos_sin, window_size, block_mask=None):
+        x = x + self.attn(norm(x), ve, cos_sin, window_size, block_mask)
         x = x + self.mlp(norm(x))
         return x
 
@@ -126,6 +171,7 @@ class GPT(nn.Module):
         super().__init__()
         self.config = config
         self.window_sizes = self._compute_window_sizes(config)
+        self._flex_block_masks = None  # Lazily built on first forward (needs CUDA device)
         self.transformer = nn.ModuleDict({
             "wte": nn.Embedding(config.vocab_size, config.n_embd),
             "h": nn.ModuleList([Block(config, i) for i in range(config.n_layer)]),
@@ -270,13 +316,20 @@ class GPT(nn.Module):
         assert T <= self.cos.size(1)
         cos_sin = self.cos[:, :T], self.sin[:, :T]
 
+        # Build block masks once on first forward pass (model starts on meta device)
+        if USE_FLEX_ATTENTION and self._flex_block_masks is None:
+            unique_windows = set(self.window_sizes)
+            cache = {ws: _build_flex_block_mask(ws, B, self.config.n_head, T) for ws in unique_windows}
+            self._flex_block_masks = [cache[ws] for ws in self.window_sizes]
+
         x = self.transformer.wte(idx)
         x = norm(x)
         x0 = x
         for i, block in enumerate(self.transformer.h):
             x = self.resid_lambdas[i] * x + self.x0_lambdas[i] * x0
             ve = self.value_embeds[str(i)](idx) if str(i) in self.value_embeds else None
-            x = block(x, ve, cos_sin, self.window_sizes[i])
+            block_mask = self._flex_block_masks[i] if USE_FLEX_ATTENTION else None
+            x = block(x, ve, cos_sin, self.window_sizes[i], block_mask)
         x = norm(x)
 
         softcap = 15
@@ -449,6 +502,8 @@ FINAL_LR_FRAC = 0.0     # final LR as fraction of initial
 # Model size
 DEPTH = 8               # number of transformer layers
 DEVICE_BATCH_SIZE = 128  # per-device batch size (reduce if OOM)
+COMPILE_WARMUP_STEPS = 3 # extra warmup for max-autotune kernel benchmarking
+TIMING_WARMUP_STEPS = 10 + COMPILE_WARMUP_STEPS  # total steps before timing starts
 
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
@@ -460,7 +515,64 @@ torch.cuda.manual_seed(42)
 torch.set_float32_matmul_precision("high")
 device = torch.device("cuda")
 autocast_ctx = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16)
-H100_BF16_PEAK_FLOPS = 989.5e12
+def get_gpu_peak_flops():
+    """Detect GPU and return peak bf16 TFLOPS (without sparsity) for MFU calculation."""
+    gpu_name = torch.cuda.get_device_name()
+    # Peak bf16 tensor core FLOPS (without sparsity) for known GPUs.
+    # More specific substrings must come before less specific ones.
+    known_gpus = [
+        # Blackwell data center
+        ("B200",           4500.0e12),
+        # Hopper data center
+        ("H200",            989.5e12),
+        ("H100 PCIe",       756.0e12),
+        ("H100 NVL",        835.0e12),
+        ("H100",            989.5e12),
+        # Ampere data center
+        ("A100",            312.0e12),
+        ("A10G",            125.0e12),
+        ("A10",             125.0e12),
+        # Ada Lovelace data center
+        ("L40S",            362.0e12),
+        ("L40",             181.0e12),
+        ("L4",              121.0e12),
+        # Volta
+        ("V100",            125.0e12),
+        # RTX 50 series (Blackwell)
+        ("RTX 5090",        419.0e12),
+        ("RTX 5080",        225.0e12),
+        ("5070 Ti",         176.0e12),
+        ("RTX 5070",        124.0e12),
+        # RTX 40 series (Ada Lovelace)
+        ("RTX 4090",        330.3e12),
+        ("4080 SUPER",      209.0e12),
+        ("RTX 4080",        195.0e12),
+        ("4070 Ti SUPER",   176.0e12),
+        ("4070 Ti",         160.0e12),
+        ("4070 SUPER",      142.0e12),
+        ("RTX 4070",        117.0e12),
+        # RTX 30 series (Ampere)
+        ("3090 Ti",         160.0e12),
+        ("RTX 3090",        142.0e12),
+        ("3080 Ti",         136.0e12),
+        ("RTX 3080",        119.0e12),
+    ]
+    for pattern, flops in known_gpus:
+        if pattern in gpu_name:
+            print(f"GPU: {gpu_name} ({flops/1e12:.1f} TFLOPS bf16 peak)")
+            return flops
+    # Fallback: rough estimate from compute capability and SM count
+    props = torch.cuda.get_device_properties(0)
+    num_sms = props.multi_processor_count
+    cap = torch.cuda.get_device_capability()
+    tflops_per_sm = {7: 1.6, 8: 2.2, 9: 7.5, 10: 17.6}.get(cap[0], 2.5)
+    estimated_flops = num_sms * tflops_per_sm * 1e12
+    print(f"WARNING: Unknown GPU '{gpu_name}' (CC {cap[0]}.{cap[1]}, {num_sms} SMs)")
+    print(f"  Estimated {estimated_flops/1e12:.1f} TFLOPS bf16 peak — MFU% will be approximate.")
+    print(f"  Add your GPU to get_gpu_peak_flops() for accurate MFU reporting.")
+    return estimated_flops
+
+GPU_PEAK_FLOPS = get_gpu_peak_flops()
 
 tokenizer = Tokenizer.from_directory()
 vocab_size = tokenizer.get_vocab_size()
@@ -505,7 +617,7 @@ optimizer = model.setup_optimizer(
     weight_decay=WEIGHT_DECAY,
 )
 
-model = torch.compile(model, dynamic=False)
+model = torch.compile(model, dynamic=False, mode="max-autotune-no-cudagraphs")
 
 train_loader = make_dataloader(tokenizer, DEVICE_BATCH_SIZE, MAX_SEQ_LEN, "train")
 x, y, epoch = next(train_loader)  # prefetch first batch
@@ -575,7 +687,7 @@ while True:
     t1 = time.time()
     dt = t1 - t0
 
-    if step > 10:
+    if step > TIMING_WARMUP_STEPS:
         total_training_time += dt
 
     # Logging
@@ -584,7 +696,7 @@ while True:
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1))
     pct_done = 100 * progress
     tok_per_sec = int(TOTAL_BATCH_SIZE / dt)
-    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / H100_BF16_PEAK_FLOPS
+    mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / GPU_PEAK_FLOPS
     remaining = max(0, TIME_BUDGET - total_training_time)
 
     print(f"\rstep {step:05d} ({pct_done:.1f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
@@ -600,7 +712,7 @@ while True:
     step += 1
 
     # Time's up — but only stop after warmup steps so we don't count compilation
-    if step > 10 and total_training_time >= TIME_BUDGET:
+    if step > TIMING_WARMUP_STEPS and total_training_time >= TIME_BUDGET:
         break
 
 print()  # newline after \r training log
@@ -615,7 +727,7 @@ with autocast_ctx:
 # Final summary
 t_end = time.time()
 startup_time = t_start_training - t_start
-steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - 10) / total_training_time / H100_BF16_PEAK_FLOPS if total_training_time > 0 else 0
+steady_state_mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE * (step - TIMING_WARMUP_STEPS) / total_training_time / GPU_PEAK_FLOPS if total_training_time > 0 else 0
 peak_vram_mb = torch.cuda.max_memory_allocated() / 1024 / 1024
 
 print("---")
