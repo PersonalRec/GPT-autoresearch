@@ -50,10 +50,10 @@ WARMUP_RATIO = 0.0      # fraction of time budget for LR warmup
 WARMDOWN_RATIO = 0.75   # fraction of time budget for LR warmdown
 FINAL_LR_FRAC = 0.05    # final LR as fraction of initial
 
-DEVICE_BATCH_SIZE = 8   # per-device batch size (reduce if OOM)
+DEVICE_BATCH_SIZE = 16   # per-device batch size (reduce if OOM)
 
 # --- GPU Performance ----
-GPU_BF16_PEAK_FLOPS = 112.6e12   # RTX 5080 dense BF16
+GPU_BF16_PEAK_FLOPS = 71.2e12   # RTX 5090 dense BF16
 
 class RotaryEmbedding(nn.Module):
     def __init__(self, dim, base=10000.0, max_position_embeddings=1024):
