@@ -77,6 +77,28 @@ Anything with a scoring function:
 - **A game AI** — scored by win rate against a baseline opponent
 - **An ML training script** — scored by validation loss (the original use case)
 
+These are the obvious cases — problems where there's already a natural number attached to the output. But the interesting frontier is everything that doesn't have one yet.
+
+### Optimizing subjective things
+
+The scoring function doesn't have to be deterministic or mechanical. It just has to return a number. And now that LLMs can act as judges, that opens up a much larger class of problems: things that used to require human taste.
+
+Consider optimizing an essay. There's no compiler output, no benchmark, no loss curve. But you can define what you care about — clarity of argument, strength of evidence, prose quality, originality, tone — and have an LLM score each dimension on a rubric. The scoring function becomes: run the essay through an LLM judge multiple times across each dimension, collect the scores, apply weights that reflect your priorities, and collapse it all into a single number. The agent never sees the rubric, the weights, or the judge's reasoning. It just pushes a branch and gets back a score.
+
+This works for anything you can articulate values about:
+
+- **An essay or blog post** — scored across argument structure, evidence quality, readability, and originality, weighted toward whatever you care about most
+- **A short story** — scored on narrative tension, character voice, prose style, and thematic coherence
+- **A product landing page** — scored on persuasiveness, clarity, emotional resonance, and information hierarchy
+- **An API design** — scored on consistency, discoverability, naming conventions, and error handling philosophy
+- **A legal brief** — scored on argument strength, precedent usage, counterargument anticipation, and conciseness
+
+The scoring function for these is more complex than a benchmark — it's a pipeline. Read the artifact, construct dimension-specific prompts, call an LLM judge (potentially multiple times for stability), parse the scores, apply the weight vector, and output the weighted sum. But from the framework's perspective, it's still just `score.sh` returning a JSON number. The machinery inside the black box is irrelevant.
+
+What makes this powerful is that the weights encode values the agents can't see. You might weight originality at 3x and conciseness at 0.5x, and the agents will converge on bold, expansive writing without ever being told to. Change the weights and the same swarm of agents will produce something entirely different. The values live in the scoring function, not in the agents — which is exactly where they should be, because it means you can change what "better" means without rewriting any agent instructions.
+
+The ceiling here is the quality of the LLM judge and the quality of your rubric. A vague rubric produces vague optimization — the agent finds whatever makes the judge say "8/10" without actually being good. A precise rubric with well-calibrated dimensions produces real improvement. The same Goodhart problem applies, but now the measure you're targeting is itself an LLM's judgment, which can be surprisingly nuanced if you give it detailed criteria to evaluate against.
+
 The quality of the scoring function is the ceiling on the quality of the results. A bad metric optimized ruthlessly produces paperclips — a system that scores well but misses the point. Whatever number you pick, a swarm of agents will exploit every degree of freedom it leaves open.
 
 ## How it works in practice
