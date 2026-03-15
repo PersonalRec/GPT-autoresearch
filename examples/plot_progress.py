@@ -6,9 +6,9 @@ Produces a chart matching the progress.png style: gray dots for discarded,
 green dots for kept, step line for running best, italic labels.
 
 Usage:
-    python test_problems/plot_progress.py evaluator/history.db
-    python test_problems/plot_progress.py evaluator/history.db -o chart.png
-    python test_problems/plot_progress.py path/to/history.db --title "My Run"
+    python examples/plot_progress.py evaluator/history.db
+    python examples/plot_progress.py evaluator/history.db -o chart.png
+    python examples/plot_progress.py path/to/history.db --title "My Run"
 """
 
 import argparse

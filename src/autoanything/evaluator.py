@@ -2,33 +2,30 @@
 
 Orchestrates scoring: finds pending proposals, scores them, merges
 improvements, and updates the leaderboard.
+
+Provides both unit functions (establish_baseline, evaluate_proposal)
+and the full polling loop (run_evaluator).
 """
 
+import os
+import time
+
+from autoanything.git import (
+    git,
+    get_proposal_branches,
+    get_branch_commit,
+    get_head_commit,
+    get_commit_message,
+)
 from autoanything.history import (
+    init_db,
     get_incumbent,
     update_incumbent,
     record_evaluation,
+    is_evaluated,
 )
 from autoanything.leaderboard import export_leaderboard
 from autoanything.scoring import run_score, is_better
-
-import subprocess as _subprocess
-
-
-def git(*args, cwd: str, check: bool = True):
-    """Run a git command. Defined locally so tests can patch it."""
-    result = _subprocess.run(
-        ["git"] + list(args),
-        capture_output=True, text=True, cwd=cwd,
-    )
-    if check and result.returncode != 0:
-        raise _subprocess.CalledProcessError(
-            result.returncode, ["git"] + list(args),
-            output=result.stdout, stderr=result.stderr,
-        )
-    return result
-
-import os
 
 
 def establish_baseline(conn, problem_dir: str, config):
@@ -53,7 +50,7 @@ def establish_baseline(conn, problem_dir: str, config):
     print("=" * 60)
 
     git("checkout", base_branch, cwd=problem_dir)
-    commit_sha = git("rev-parse", "HEAD", cwd=problem_dir).stdout.strip()
+    commit_sha = get_head_commit(cwd=problem_dir)
 
     print(f"Commit: {commit_sha[:7]}")
     print("Running score.sh...")
@@ -97,7 +94,7 @@ def evaluate_proposal(conn, branch: str, commit_sha: str, direction: str,
     timeout = config.score.timeout
     leaderboard_path = os.path.join(problem_dir, "leaderboard.md")
 
-    description = git("log", "-1", "--format=%s", commit_sha, cwd=problem_dir).stdout.strip()
+    description = get_commit_message(commit_sha, cwd=problem_dir)
     incumbent = get_incumbent(conn)
 
     print(f"\n{'=' * 60}")
@@ -110,8 +107,8 @@ def evaluate_proposal(conn, branch: str, commit_sha: str, direction: str,
     # Detach HEAD at the proposal commit
     try:
         git("checkout", commit_sha, "--detach", cwd=problem_dir)
-    except _subprocess.CalledProcessError as e:
-        print(f"  Failed to checkout: {e.stderr}")
+    except Exception as e:
+        print(f"  Failed to checkout: {e}")
         return
 
     score, metrics, duration, error = run_score(
@@ -139,8 +136,8 @@ def evaluate_proposal(conn, branch: str, commit_sha: str, direction: str,
                 "-m", f"Merge {branch}: score improved", cwd=problem_dir)
             update_incumbent(conn, commit_sha, score)
             print("  Merged to main.")
-        except _subprocess.CalledProcessError as e:
-            print(f"  Merge failed (score still recorded): {e.stderr}")
+        except Exception as e:
+            print(f"  Merge failed (score still recorded): {e}")
     else:
         print(f"  REJECTED: {score:.6f} (incumbent: {incumbent['score']:.6f})")
         record_evaluation(
@@ -154,3 +151,69 @@ def evaluate_proposal(conn, branch: str, commit_sha: str, direction: str,
     git("commit", "-m",
         f"Update leaderboard: {branch} ({score_str})",
         cwd=problem_dir, check=False)
+
+
+def run_evaluator(problem_dir: str, config, db_path: str,
+                  baseline_only: bool = False, push: bool = False,
+                  poll_interval: int = 30):
+    """Run the full polling evaluation loop.
+
+    Args:
+        problem_dir: Path to the problem directory.
+        config: ProblemConfig.
+        db_path: Path to the SQLite database.
+        baseline_only: If True, establish baseline and exit.
+        push: If True, push leaderboard and merge results to origin.
+        poll_interval: Seconds between polls.
+    """
+    import sys
+
+    direction = config.score.direction
+    base_branch = config.git.base_branch
+    pattern = config.git.proposal_pattern
+
+    conn = init_db(db_path)
+
+    # Establish baseline if needed
+    incumbent = get_incumbent(conn)
+    if incumbent is None:
+        if not establish_baseline(conn, problem_dir, config):
+            sys.exit(1)
+        incumbent = get_incumbent(conn)
+        if push:
+            git("push", "origin", base_branch, cwd=problem_dir)
+
+    if baseline_only:
+        print(f"\nBaseline: {incumbent['score']:.6f}")
+        conn.close()
+        return
+
+    print(f"\nIncumbent: {incumbent['score']:.6f} ({incumbent['commit_sha'][:7]})")
+    print(f"Direction: {direction}")
+    print(f"Polling every {poll_interval}s for {pattern} branches...")
+    print()
+
+    while True:
+        # Fetch latest
+        git("fetch", "--all", "--prune", cwd=problem_dir, check=False)
+
+        # Find unevaluated proposals
+        branches = get_proposal_branches(cwd=problem_dir, pattern=pattern)
+        pending = []
+        for branch in branches:
+            commit = get_branch_commit(branch, cwd=problem_dir)
+            if not is_evaluated(conn, commit):
+                pending.append((branch, commit))
+
+        if not pending:
+            time.sleep(poll_interval)
+            continue
+
+        print(f"Found {len(pending)} pending proposal(s)")
+
+        for branch, commit_sha in pending:
+            evaluate_proposal(conn, branch, commit_sha, direction,
+                              problem_dir, config)
+
+        if push:
+            git("push", "origin", base_branch, cwd=problem_dir, check=False)

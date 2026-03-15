@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # activate.sh — Switch the repo to an optimization problem.
 #
-# Usage: bash test_problems/activate.sh <problem>
+# Usage: bash examples/activate.sh <problem>
 #
 # This copies the problem's files into the repo root, replacing:
 #   problem.yaml, agent_instructions.md, leaderboard.md,
 #   state/*, context/*, evaluator/score.sh
 #
-# Every problem follows the same structure — see test_problems/README.md.
+# Every problem follows the same structure — see examples/README.md.
 
 set -euo pipefail
 
@@ -15,7 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 if [ $# -ne 1 ]; then
-    echo "Usage: bash test_problems/activate.sh <problem>"
+    echo "Usage: bash examples/activate.sh <problem>"
     echo ""
     echo "Available problems:"
     for d in "$SCRIPT_DIR"/*/; do
@@ -68,6 +68,7 @@ cp "$PROBLEM_DIR/evaluator/score.sh" "$REPO_ROOT/evaluator/score.sh"
 chmod +x "$REPO_ROOT/evaluator/score.sh"
 
 # Remove stale evaluator state
+rm -rf "$REPO_ROOT/.autoanything"
 rm -f "$REPO_ROOT/evaluator/history.db"
 rm -f "$REPO_ROOT/evaluator/run.log"
 
@@ -75,4 +76,5 @@ echo ""
 echo "Done. Active problem: $PROBLEM"
 echo ""
 echo "Quick test:  bash evaluator/score.sh"
-echo "Baseline:    uv run evaluator/evaluate.py --baseline-only"
+echo "Baseline:    autoanything evaluate --baseline-only"
+echo "Evaluate:    autoanything evaluate"

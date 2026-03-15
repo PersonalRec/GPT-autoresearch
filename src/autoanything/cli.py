@@ -13,6 +13,29 @@ import click
 from autoanything.problem import load_problem, ValidationError
 
 
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+def _resolve_db_path(problem_dir: str, db: str | None) -> str:
+    """Resolve the database path from --db flag or default location."""
+    if db:
+        return db
+    # Prefer .autoanything/history.db; fall back to evaluator/history.db if it exists
+    new_path = os.path.join(problem_dir, ".autoanything", "history.db")
+    old_path = os.path.join(problem_dir, "evaluator", "history.db")
+    if os.path.exists(old_path) and not os.path.exists(new_path):
+        return old_path
+    os.makedirs(os.path.dirname(new_path), exist_ok=True)
+    return new_path
+
+
+# ---------------------------------------------------------------------------
+# CLI group
+# ---------------------------------------------------------------------------
+
+
 @click.group()
 def main():
     """AutoAnything — autonomous optimization via AI agents."""
@@ -213,11 +236,12 @@ def score(problem_dir):
 
 @main.command()
 @click.option("--dir", "problem_dir", default=".", help="Problem directory.")
-def history(problem_dir):
+@click.option("--db", default=None, help="Path to history database.")
+def history(problem_dir, db):
     """Print evaluation history."""
     from autoanything.history import init_db as _init_db
 
-    db_path = os.path.join(problem_dir, ".autoanything", "history.db")
+    db_path = _resolve_db_path(problem_dir, db)
     if not os.path.exists(db_path):
         click.echo("No evaluation history yet.")
         return
@@ -242,7 +266,8 @@ def history(problem_dir):
 
 @main.command()
 @click.option("--dir", "problem_dir", default=".", help="Problem directory.")
-def leaderboard(problem_dir):
+@click.option("--db", default=None, help="Path to history database.")
+def leaderboard(problem_dir, db):
     """Regenerate leaderboard.md from history."""
     from autoanything.history import init_db as _init_db
     from autoanything.leaderboard import export_leaderboard as _export
@@ -253,7 +278,7 @@ def leaderboard(problem_dir):
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    db_path = os.path.join(problem_dir, ".autoanything", "history.db")
+    db_path = _resolve_db_path(problem_dir, db)
     if not os.path.exists(db_path):
         click.echo("No evaluation history yet.")
         return
@@ -269,16 +294,88 @@ def leaderboard(problem_dir):
 @click.option("--dir", "problem_dir", default=".", help="Problem directory.")
 @click.option("--baseline-only", is_flag=True, help="Establish baseline and exit.")
 @click.option("--push", is_flag=True, help="Push results to origin.")
-def evaluate(problem_dir, baseline_only, push):
+@click.option("--poll-interval", default=30, help="Seconds between polls (default: 30).")
+@click.option("--db", default=None, help="Path to history database.")
+def evaluate(problem_dir, baseline_only, push, poll_interval, db):
     """Start the polling evaluator (watches for proposal branches)."""
-    click.echo("Use 'python evaluator/evaluate.py' for now — full CLI integration in Phase 2.")
-    sys.exit(1)
+    from autoanything.evaluator import run_evaluator
+
+    try:
+        config = load_problem(problem_dir)
+    except FileNotFoundError:
+        click.echo("Error: No problem.yaml found. Set up a problem first.", err=True)
+        sys.exit(1)
+    except ValidationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    db_path = _resolve_db_path(problem_dir, db)
+
+    run_evaluator(
+        problem_dir=problem_dir,
+        config=config,
+        db_path=db_path,
+        baseline_only=baseline_only,
+        push=push,
+        poll_interval=poll_interval,
+    )
 
 
 @main.command()
 @click.option("--dir", "problem_dir", default=".", help="Problem directory.")
 @click.option("--port", default=8000, help="Port (default: 8000).")
-def serve(problem_dir, port):
+@click.option("--host", default="0.0.0.0", help="Host (default: 0.0.0.0).")
+@click.option("--push", is_flag=True, help="Push leaderboard updates to origin.")
+@click.option("--db", default=None, help="Path to history database.")
+def serve(problem_dir, port, host, push, db):
     """Start the webhook server."""
-    click.echo("Use 'python evaluator/server.py' for now — full CLI integration in Phase 2.")
-    sys.exit(1)
+    import logging
+
+    from autoanything.history import init_db as _init_db, get_incumbent as _get_incumbent
+    from autoanything.server import create_app
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+    slogger = logging.getLogger("autoanything.server")
+
+    webhook_secret = os.environ.get("WEBHOOK_SECRET")
+    if not webhook_secret:
+        slogger.warning(
+            "WEBHOOK_SECRET not set — accepting all webhook requests without verification"
+        )
+
+    db_path = _resolve_db_path(problem_dir, db)
+
+    # Require an existing baseline
+    conn = _init_db(db_path)
+    incumbent = _get_incumbent(conn)
+    conn.close()
+    if incumbent is None:
+        click.echo(
+            "Error: No baseline found. Run 'autoanything evaluate --baseline-only' first.",
+            err=True,
+        )
+        sys.exit(1)
+
+    try:
+        config = load_problem(problem_dir)
+    except Exception:
+        config = None
+
+    slogger.info("Incumbent: %.6f (%s)", incumbent["score"], incumbent["commit_sha"][:7])
+    slogger.info("Push: %s", "enabled" if push else "disabled")
+    if config:
+        slogger.info("Base branch: %s", config.git.base_branch)
+    slogger.info("Starting server on %s:%d", host, port)
+
+    app = create_app(
+        problem_dir=problem_dir,
+        webhook_secret=webhook_secret,
+        db_path=db_path,
+        push=push,
+    )
+
+    import uvicorn
+    uvicorn.run(app, host=host, port=port, log_level="info")

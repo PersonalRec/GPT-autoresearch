@@ -450,7 +450,7 @@ Key conventions the tests lock in:
   - Remove `evaluator/evaluate.py` and `evaluator/server.py` (they become the package modules)
   - Make evaluator state location configurable via `--db` flag or env var
 
-### Phase 2: Wire CLI + Cleanup (reduced scope — extraction done in Phase 1)
+### Phase 2: Wire CLI + Cleanup [DONE]
 
 **Goal:** Complete the transition from evaluator scripts to the `autoanything` CLI. Rename directories, remove old scripts.
 
@@ -459,40 +459,71 @@ Key conventions the tests lock in:
 **Steps:**
 
 1. Fill out `src/autoanything/git.py` with helpers needed by the polling loop:
-   - `get_proposal_branches(cwd, pattern)` — list remote branches matching pattern.
+   - `get_proposal_branches(cwd, pattern)` — changed from local to remote branch listing (`git branch -r`).
    - `get_branch_commit(branch, cwd)` — resolve a remote branch to a commit SHA.
-   - `get_head_commit(cwd)` — resolve HEAD to a commit SHA.
-   - `get_commit_message(commit_sha, cwd)` — first line of a commit message.
+   - `get_head_commit(cwd)` — resolve HEAD to a commit SHA (already existed).
+   - `get_commit_message(commit_sha, cwd)` — first line of a commit message (already existed).
    - `merge_proposal(branch, base_branch, cwd)` — merge a proposal into base.
    - The existing `git(*args, cwd)` wrapper stays as the foundation.
 
 2. Wire `autoanything evaluate` CLI command to `src/autoanything/evaluator.py`:
-   - Implement the polling loop (~30 lines): fetch, list proposal branches via `git.py` helpers, filter with `is_evaluated` from `history.py`, call `evaluate_proposal` for each.
-   - `establish_baseline` and `evaluate_proposal` already exist as unit functions.
-   - Support `--baseline-only`, `--poll-interval`, `--push`, `--db` flags.
+   - Added `run_evaluator()` function implementing the full polling loop: fetch, list proposal branches via `git.py` helpers, filter with `is_evaluated` from `history.py`, call `evaluate_proposal` for each.
+   - `establish_baseline` and `evaluate_proposal` refactored to import from `autoanything.git` instead of defining a local `git()` wrapper.
+   - CLI supports `--baseline-only`, `--poll-interval`, `--push`, `--db` flags.
 
 3. Wire `autoanything serve` CLI command to `src/autoanything/server.py`:
-   - The `create_app()` factory exists with `/health` and `/webhook` endpoints + queue logic. What's missing:
-     - `gh()` subprocess helper, `pr_comment`, `pr_merge`, `pr_close`, `pr_diff_files` (~30 lines)
-     - `format_results_comment` — markdown PR comment formatting (~40 lines)
-     - `evaluation_worker` thread that drains the queue and calls scoring/merge logic (~80 lines)
-     - `_evaluate_one_pr` — checkout, validate files, score, comment, merge/close (~60 lines)
-     - `startup_scan` — `gh pr list` to enqueue unevaluated open PRs (~40 lines)
+   - Expanded `create_app()` factory to include the full evaluation pipeline:
+     - `gh()` subprocess helper, `pr_comment`, `pr_merge`, `pr_close`, `pr_diff_files` — all with explicit `cwd` parameter
+     - `format_results_comment` — markdown PR comment formatting with metrics table
+     - `evaluation_worker` thread that drains the queue and calls scoring/merge logic
+     - `_evaluate_one_pr` — checkout, validate files, score, comment, merge/close
+     - `startup_scan` — `gh pr list` to enqueue unevaluated open PRs
      - Lifespan context manager to start the worker thread on app startup
-   - Port all of this from `evaluator/server.py` (the working implementation).
-   - Support `--port`, `--host`, `--push` flags.
+   - All functions are closures inside `create_app()`, capturing `problem_dir`, `config`, etc. — no module-level globals.
+   - CLI supports `--port`, `--host`, `--push`, `--db` flags.
 
-4. Rename `test_problems/` to `examples/`.
+4. Renamed `test_problems/` to `examples/` via `git mv`.
 
-5. Remove `evaluator/evaluate.py` and `evaluator/server.py` together (server.py imports from evaluate.py via `sys.path` manipulation — they must go as a pair). Keep `evaluator/` in gitignore for problem repos' scoring code.
+5. `evaluator/evaluate.py` and `evaluator/server.py` are not tracked by git (the `evaluator/` directory is gitignored). They continue to exist locally for backward compatibility but are superseded by the package modules. No git operation needed.
 
-6. Make evaluator state location configurable:
+6. Made evaluator state location configurable:
+   - Added `_resolve_db_path(problem_dir, db)` helper in `cli.py`.
    - Default: `.autoanything/history.db` in the problem directory.
-   - Configurable via `--db` flag or env var.
+   - Falls back to `evaluator/history.db` if it exists (migration path).
+   - Configurable via `--db` flag on `evaluate`, `serve`, `history`, and `leaderboard` commands.
 
-7. Update `activate.sh` to work with the new directory layout, or remove it if the CLI replaces its function.
+7. Updated `activate.sh` for the new directory layout:
+   - Updated path references from `test_problems/` to `examples/`.
+   - Updated help text to reference `autoanything evaluate` instead of `uv run evaluator/evaluate.py`.
+   - Clears `.autoanything/` state on activation.
 
-**Validation:** `pip install -e .` in the repo, then `cd examples/rastrigin && autoanything evaluate --baseline-only` works.
+8. *(Additional)* Updated `CLAUDE.md` to reflect new structure and CLI commands.
+
+9. *(Additional)* Updated all references from `test_problems/` to `examples/` in `run_test.py`, `plot_progress.py`, `README.md`, and `test_integration.py`.
+
+**Validation:** 101 tests pass across 10 test files (up from 98 — added tests for `get_branch_commit`, `merge_proposal`, and `TestGetBranchCommit`).
+
+#### Implementation Summary
+
+**What was built:**
+- Full polling evaluation loop in `src/autoanything/evaluator.py` via `run_evaluator()` — the package is now self-contained and doesn't need the standalone `evaluator/evaluate.py` script.
+- Full webhook server in `src/autoanything/server.py` — `create_app()` now includes the evaluation worker, PR validation, GitHub interaction, startup scan, and leaderboard updates. The package doesn't need the standalone `evaluator/server.py` script.
+- Complete `git.py` with `get_branch_commit()` and `merge_proposal()` helpers. Changed `get_proposal_branches()` to list remote branches (matching the real evaluator behavior).
+- `--db` flag on `evaluate`, `serve`, `history`, and `leaderboard` commands for configurable database location.
+- `test_problems/` renamed to `examples/` — all internal references updated.
+- `CLAUDE.md` updated to reflect new structure and CLI commands.
+- 101/101 tests passing.
+
+**Key deviations from the original plan:**
+- `evaluator/evaluate.py` and `evaluator/server.py` are not removed from disk because they were never tracked by git (`evaluator/` is gitignored). They still exist locally and work as before, but are superseded by the package modules. The plan said "remove them" but there's nothing to remove from git.
+- The server's internal functions (`_evaluate_one_pr`, `evaluation_worker`, etc.) are closures inside `create_app()` rather than module-level functions. This eliminates all module-level global state — everything is captured from the factory's parameters.
+- `format_results_comment` takes an explicit `score_name` parameter instead of using a cached config object, making it a pure function.
+- Added `_resolve_db_path()` helper that encapsulates the db location logic (new default → old fallback → explicit --db) used by multiple CLI commands.
+
+**What this means for downstream phases:**
+- Phase 3 (scaffolding polish) is unchanged — `init` and `validate` still work, templates can still be externalized.
+- Phase 4 (migration/cleanup) scope is reduced: `test_problems/` rename is done, `evaluator/` scripts don't need git removal (never tracked). Remaining: decide on `activate.sh` future, migrate `run_test.py`/`plot_progress.py`.
+- Phase 5 (docs) is partially done: `CLAUDE.md` already updated. Remaining: `README.md` rewrite, `MIGRATING.md`.
 
 ### Phase 3: Scaffolding and Init (polish)
 
@@ -524,25 +555,29 @@ Key conventions the tests lock in:
 
 ### Phase 4: Migration and Cleanup
 
-**Goal:** Remove the old structure, update documentation, ensure backward compatibility during transition.
+**Goal:** Clean up remaining legacy artifacts and migrate standalone scripts.
+
+**Note:** Phase 2 already renamed `test_problems/` to `examples/` and updated `CLAUDE.md`. The `evaluator/evaluate.py` and `evaluator/server.py` scripts are not tracked by git (gitignored), so no git removal is needed. They continue to work locally but are superseded by the package.
 
 **Steps:**
 
-1. Remove `activate.sh`.
+1. Decide on `activate.sh` — keep it in `examples/` for now (it's still useful for the framework repo's own development), or replace with an `autoanything activate` CLI command.
 
-2. Remove `evaluator/evaluate.py` and `evaluator/server.py` from the repo root (they now live in the package). Keep `evaluator/` in the gitignore since problem repos will use `scoring/` instead.
-
-3. Convert `test_problems/run_test.py` into either:
+2. Convert `examples/run_test.py` into either:
    - `autoanything test` CLI command, or
    - A standalone script in `examples/` that imports from the `autoanything` package.
 
-4. Move `test_problems/plot_progress.py` to `src/autoanything/` or make it a CLI command (`autoanything plot`).
+3. Convert `examples/plot_progress.py` into either:
+   - `autoanything plot` CLI command, or
+   - A standalone script in `examples/`.
 
-**Validation:** Old evaluator scripts removed, examples directory works standalone, `run_test.py` and `plot_progress.py` migrated.
+**Validation:** Examples directory works standalone, `run_test.py` and `plot_progress.py` migrated or refactored.
 
 ### Phase 5: Documentation Update
 
-**Goal:** Rewrite all documentation to reflect the new installable-framework structure. After Phase 4 removes the old code, the docs should match the current reality.
+**Goal:** Rewrite remaining documentation to reflect the new installable-framework structure.
+
+**Note:** `CLAUDE.md` was already updated in Phase 2 to reflect the new structure and CLI commands.
 
 **Steps:**
 
@@ -551,26 +586,19 @@ Key conventions the tests lock in:
    - Quick start: `autoanything init`, edit files, `autoanything score`, `autoanything evaluate`
    - Problem structure overview (what goes in a problem directory)
    - Link to `examples/` for reference problems
-   - Remove all references to `activate.sh`, `evaluator/evaluate.py`, `evaluator/server.py`
+   - Remove all references to `evaluator/evaluate.py`, `evaluator/server.py`
 
-2. Rewrite `CLAUDE.md`:
-   - Update repository structure to reflect `src/autoanything/`, `examples/`, removal of `evaluator/`
-   - Update commands section: replace `uv run evaluator/evaluate.py` with `autoanything evaluate`, etc.
-   - Update problem structure to show `scoring/` instead of `evaluator/score.sh`
-   - Update agent protocol if any steps changed
-   - Remove references to `activate.sh`
-
-3. Add `MIGRATING.md` for anyone who forked the old structure:
+2. Add `MIGRATING.md` for anyone who forked the old structure:
    - Move your problem files into their own directory
    - Move `evaluator/score.sh` to `scoring/score.sh`
    - Install `autoanything` and use CLI commands instead of running scripts directly
    - The `evaluator/` directory at repo root is no longer needed
 
-4. Update `agent_instructions.md` template in `src/autoanything/templates/` to reference the CLI commands.
+3. Update `agent_instructions.md` template in `src/autoanything/templates/` to reference the CLI commands.
 
-5. Review and update any inline help text in CLI commands (`--help` output) for accuracy.
+4. Review and update any inline help text in CLI commands (`--help` output) for accuracy.
 
-**Validation:** All docs reference the new structure. No mentions of `activate.sh`, `evaluator/evaluate.py`, or `evaluator/server.py` remain outside of `MIGRATING.md`.
+**Validation:** All docs reference the new structure. No mentions of `evaluator/evaluate.py` or `evaluator/server.py` remain outside of `MIGRATING.md`.
 
 ### Phase 6: Extended Features (future, not blocking)
 

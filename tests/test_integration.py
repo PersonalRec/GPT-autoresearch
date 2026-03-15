@@ -67,7 +67,7 @@ class TestExistingProblemStructure:
 
         problem_dir = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
-            "test_problems", problem,
+            "examples", problem,
         )
         if not os.path.exists(os.path.join(problem_dir, "problem.yaml")):
             pytest.skip(f"No problem.yaml for {problem}")

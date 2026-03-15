@@ -23,14 +23,22 @@ def eval_db(tmp_path):
     return conn, db_path
 
 
+# Patch targets: the evaluator imports git helpers and scoring from their
+# source modules, so we patch at the point of use in autoanything.evaluator.
+GIT_PATCH = "autoanything.evaluator.git"
+HEAD_PATCH = "autoanything.evaluator.get_head_commit"
+MSG_PATCH = "autoanything.evaluator.get_commit_message"
+SCORE_PATCH = "autoanything.evaluator.run_score"
+
+
 class TestEstablishBaseline:
     """Baseline establishment scores the current state and records it."""
 
-    @patch("autoanything.evaluator.run_score")
-    @patch("autoanything.evaluator.git")
-    def test_records_baseline(self, mock_git, mock_run_score, eval_db, tmp_path):
+    @patch(SCORE_PATCH)
+    @patch(HEAD_PATCH, return_value="abc1234567890abcdef1234567890abcdef123456")
+    @patch(GIT_PATCH)
+    def test_records_baseline(self, mock_git, mock_head, mock_run_score, eval_db, tmp_path):
         conn, db_path = eval_db
-        mock_git.return_value = MagicMock(stdout="abc123\n", returncode=0)
         mock_run_score.return_value = (42.5, {"cost": 42.5}, 1.0, None)
 
         result = establish_baseline(conn, problem_dir=str(tmp_path), config=MagicMock(
@@ -43,11 +51,11 @@ class TestEstablishBaseline:
         assert inc is not None
         assert inc["score"] == 42.5
 
-    @patch("autoanything.evaluator.run_score")
-    @patch("autoanything.evaluator.git")
-    def test_returns_false_on_score_failure(self, mock_git, mock_run_score, eval_db, tmp_path):
+    @patch(SCORE_PATCH)
+    @patch(HEAD_PATCH, return_value="abc1234567890abcdef1234567890abcdef123456")
+    @patch(GIT_PATCH)
+    def test_returns_false_on_score_failure(self, mock_git, mock_head, mock_run_score, eval_db, tmp_path):
         conn, db_path = eval_db
-        mock_git.return_value = MagicMock(stdout="abc123\n", returncode=0)
         mock_run_score.return_value = (None, None, 1.0, "script failed")
 
         result = establish_baseline(conn, problem_dir=str(tmp_path), config=MagicMock(
@@ -62,12 +70,12 @@ class TestEstablishBaseline:
 class TestEvaluateProposal:
     """Evaluating a proposal branch: accept, reject, or crash."""
 
-    @patch("autoanything.evaluator.run_score")
-    @patch("autoanything.evaluator.git")
-    def test_accepts_better_score(self, mock_git, mock_run_score, eval_db, tmp_path):
+    @patch(SCORE_PATCH)
+    @patch(MSG_PATCH, return_value="improve score")
+    @patch(GIT_PATCH)
+    def test_accepts_better_score(self, mock_git, mock_msg, mock_run_score, eval_db, tmp_path):
         conn, db_path = eval_db
         update_incumbent(conn, "base", 100.0)
-        mock_git.return_value = MagicMock(stdout="prop1\n", returncode=0)
         mock_run_score.return_value = (50.0, {"cost": 50.0}, 2.0, None)
 
         evaluate_proposal(
@@ -83,12 +91,12 @@ class TestEvaluateProposal:
         inc = get_incumbent(conn)
         assert inc["score"] == 50.0
 
-    @patch("autoanything.evaluator.run_score")
-    @patch("autoanything.evaluator.git")
-    def test_rejects_worse_score(self, mock_git, mock_run_score, eval_db, tmp_path):
+    @patch(SCORE_PATCH)
+    @patch(MSG_PATCH, return_value="worse attempt")
+    @patch(GIT_PATCH)
+    def test_rejects_worse_score(self, mock_git, mock_msg, mock_run_score, eval_db, tmp_path):
         conn, db_path = eval_db
         update_incumbent(conn, "base", 50.0)
-        mock_git.return_value = MagicMock(stdout="prop2\n", returncode=0)
         mock_run_score.return_value = (100.0, {"cost": 100.0}, 2.0, None)
 
         evaluate_proposal(
@@ -104,12 +112,12 @@ class TestEvaluateProposal:
         inc = get_incumbent(conn)
         assert inc["score"] == 50.0
 
-    @patch("autoanything.evaluator.run_score")
-    @patch("autoanything.evaluator.git")
-    def test_records_crash(self, mock_git, mock_run_score, eval_db, tmp_path):
+    @patch(SCORE_PATCH)
+    @patch(MSG_PATCH, return_value="crashed attempt")
+    @patch(GIT_PATCH)
+    def test_records_crash(self, mock_git, mock_msg, mock_run_score, eval_db, tmp_path):
         conn, db_path = eval_db
         update_incumbent(conn, "base", 50.0)
-        mock_git.return_value = MagicMock(stdout="prop3\n", returncode=0)
         mock_run_score.return_value = (None, None, 0.5, "segfault")
 
         evaluate_proposal(
@@ -132,12 +140,12 @@ class TestEvaluateProposal:
         assert row[0] == "crash"
         assert "segfault" in row[1]
 
-    @patch("autoanything.evaluator.run_score")
-    @patch("autoanything.evaluator.git")
-    def test_maximize_accepts_higher(self, mock_git, mock_run_score, eval_db, tmp_path):
+    @patch(SCORE_PATCH)
+    @patch(MSG_PATCH, return_value="higher is better")
+    @patch(GIT_PATCH)
+    def test_maximize_accepts_higher(self, mock_git, mock_msg, mock_run_score, eval_db, tmp_path):
         conn, db_path = eval_db
         update_incumbent(conn, "base", 50.0)
-        mock_git.return_value = MagicMock(stdout="prop4\n", returncode=0)
         mock_run_score.return_value = (100.0, {"accuracy": 100.0}, 2.0, None)
 
         evaluate_proposal(

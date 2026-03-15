@@ -6,17 +6,17 @@ All optimization problems for the AutoAnything framework live here. Each follows
 
 ```bash
 # Activate a problem (copies files into the repo root)
-bash test_problems/activate.sh rastrigin
+bash examples/activate.sh rastrigin
 
 # Verify scoring works
 bash evaluator/score.sh
 
 # Establish baseline and start evaluator
-uv run evaluator/evaluate.py --baseline-only
-uv run evaluator/evaluate.py
+autoanything evaluate --baseline-only
+autoanything evaluate
 
 # Switch to a different problem
-bash test_problems/activate.sh tsp
+bash examples/activate.sh tsp
 ```
 
 ## Available Problems
@@ -102,7 +102,7 @@ bash test_problems/activate.sh tsp
 Every problem is a directory with the same layout:
 
 ```
-test_problems/<name>/
+examples/<name>/
 ├── problem.yaml           # Problem definition
 ├── agent_instructions.md  # Protocol for agents
 ├── state/*.py             # Mutable file(s) agents edit
@@ -134,9 +134,9 @@ print(json.dumps({'score': evaluate(x)}))
 
 ```bash
 # Run a test (generates test_progress_<problem>.png in current dir)
-uv run test_problems/run_test.py rastrigin
-uv run test_problems/run_test.py tsp --submissions 20
-uv run test_problems/run_test.py packing --include-failures -o chart.png
+uv run examples/run_test.py rastrigin
+uv run examples/run_test.py tsp --submissions 20
+uv run examples/run_test.py packing --include-failures -o chart.png
 ```
 
 Options:
@@ -152,6 +152,6 @@ Requires `matplotlib` (add with `uv add matplotlib` if not already in deps).
 `plot_progress.py` generates a progress chart from any evaluation `history.db` — works with both test runs and real evaluator runs.
 
 ```bash
-uv run test_problems/plot_progress.py evaluator/history.db
-uv run test_problems/plot_progress.py evaluator/history.db -o chart.png --title "My Run"
+uv run examples/plot_progress.py evaluator/history.db
+uv run examples/plot_progress.py evaluator/history.db -o chart.png --title "My Run"
 ```

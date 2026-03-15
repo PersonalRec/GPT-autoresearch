@@ -22,13 +22,14 @@ def git(*args, cwd: str, check: bool = True):
 
 
 def get_proposal_branches(cwd: str, pattern: str = "proposals/*"):
-    """List local branches matching the proposal pattern."""
-    result = git("branch", "--list", f"{pattern}", cwd=cwd, check=False)
+    """List remote proposal branches matching pattern."""
+    result = git("branch", "-r", "--list", f"origin/{pattern}", cwd=cwd, check=False)
     branches = []
     for line in result.stdout.strip().split("\n"):
-        line = line.strip().lstrip("* ")
+        line = line.strip()
         if line and not line.endswith("/HEAD"):
-            branches.append(line)
+            branch = line.replace("origin/", "", 1)
+            branches.append(branch)
     return branches
 
 
@@ -37,6 +38,18 @@ def get_head_commit(cwd: str) -> str:
     return git("rev-parse", "HEAD", cwd=cwd).stdout.strip()
 
 
+def get_branch_commit(branch: str, cwd: str) -> str:
+    """Get the commit SHA for a remote branch."""
+    return git("rev-parse", f"origin/{branch}", cwd=cwd).stdout.strip()
+
+
 def get_commit_message(commit_sha: str, cwd: str) -> str:
     """Get the first line of a commit message."""
     return git("log", "-1", "--format=%s", commit_sha, cwd=cwd).stdout.strip()
+
+
+def merge_proposal(branch: str, base_branch: str, cwd: str):
+    """Merge a successful proposal into the base branch."""
+    git("checkout", base_branch, cwd=cwd)
+    git("merge", f"origin/{branch}", "--no-ff",
+        "-m", f"Merge {branch}: score improved", cwd=cwd)

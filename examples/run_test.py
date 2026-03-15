@@ -6,9 +6,9 @@ Simulates agent submissions, scores them, and generates a progress chart.
 Runs in a temp directory — does not modify the repo working tree.
 
 Usage:
-    python test_problems/run_test.py rastrigin
-    python test_problems/run_test.py tsp --submissions 20
-    python test_problems/run_test.py packing --include-failures -o chart.png
+    python examples/run_test.py rastrigin
+    python examples/run_test.py tsp --submissions 20
+    python examples/run_test.py packing --include-failures -o chart.png
 """
 
 import argparse
