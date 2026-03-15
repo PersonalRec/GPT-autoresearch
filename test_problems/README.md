@@ -12,8 +12,8 @@ bash test_problems/activate.sh rastrigin
 bash evaluator/score.sh
 
 # Establish baseline and start evaluator
-python evaluator/evaluate.py --baseline-only
-python evaluator/evaluate.py
+uv run evaluator/evaluate.py --baseline-only
+uv run evaluator/evaluate.py
 
 # Restore the real GPT pretraining problem when done
 git checkout -- problem.yaml agent_instructions.md state/ context/
@@ -82,9 +82,9 @@ git checkout -- problem.yaml agent_instructions.md state/ context/
 
 ```bash
 # Run a test (generates test_progress_<problem>.png in current dir)
-python test_problems/run_test.py rastrigin
-python test_problems/run_test.py tsp --submissions 20
-python test_problems/run_test.py packing --include-failures -o chart.png
+uv run test_problems/run_test.py rastrigin
+uv run test_problems/run_test.py tsp --submissions 20
+uv run test_problems/run_test.py packing --include-failures -o chart.png
 ```
 
 Options:
@@ -93,15 +93,15 @@ Options:
 - `-o`, `--output` — output chart path (default: `test_progress_<problem>.png`)
 - `--seed` — random seed for reproducibility (default: 42)
 
-Requires `matplotlib` (`pip install matplotlib`).
+Requires `matplotlib` (add with `uv add matplotlib` if not already in deps).
 
 ### Standalone chart generation
 
 `plot_progress.py` generates a progress chart from any evaluation `history.db` — works with both test runs and real evaluator runs.
 
 ```bash
-python test_problems/plot_progress.py evaluator/history.db
-python test_problems/plot_progress.py evaluator/history.db -o chart.png --title "My Run"
+uv run test_problems/plot_progress.py evaluator/history.db
+uv run test_problems/plot_progress.py evaluator/history.db -o chart.png --title "My Run"
 ```
 
 ## File Structure

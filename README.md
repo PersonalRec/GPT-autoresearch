@@ -63,23 +63,23 @@ The evaluator is private and runs on your scoring machine. It's gitignored — a
 
 ```bash
 # 1. Establish baseline (runs training once, records the score)
-python evaluator/evaluate.py --baseline-only
+uv run evaluator/evaluate.py --baseline-only
 
 # 2. Start the evaluation loop (polls for proposal branches)
-python evaluator/evaluate.py
+uv run evaluator/evaluate.py
 
 # 3. With auto-push (pushes leaderboard updates to origin)
-python evaluator/evaluate.py --push
+uv run evaluator/evaluate.py --push
 ```
 
 ### Option B: Web evaluator (receives GitHub PR webhooks)
 
 ```bash
 # 1. Establish baseline first (same as above)
-python evaluator/evaluate.py --baseline-only
+uv run evaluator/evaluate.py --baseline-only
 
 # 2. Start the webhook server
-python evaluator/server.py --push
+uv run evaluator/server.py --push
 
 # 3. Configure the GitHub webhook:
 #    URL: https://<your-domain>/webhook
@@ -132,8 +132,8 @@ bash test_problems/activate.sh rastrigin   # or: tsp, packing
 bash evaluator/score.sh
 
 # Run the evaluator
-python evaluator/evaluate.py --baseline-only
-python evaluator/evaluate.py
+uv run evaluator/evaluate.py --baseline-only
+uv run evaluator/evaluate.py
 
 # Restore the real problem
 git checkout -- problem.yaml agent_instructions.md state/ context/

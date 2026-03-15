@@ -40,23 +40,23 @@ uv run state/train.py > run.log 2>&1       # run with output capture
 grep "^val_bpb:\|^peak_vram_mb:" run.log   # extract key metrics
 
 # Evaluator (run on the scoring machine, not by agents)
-python evaluator/evaluate.py               # start the serial evaluation loop (polls for branches)
-python evaluator/evaluate.py --baseline-only  # just establish the baseline score
-python evaluator/evaluate.py --push        # push leaderboard updates to origin
-python evaluator/server.py                 # start the webhook-driven web evaluator
-python evaluator/server.py --push          # web evaluator with auto-push
+uv run evaluator/evaluate.py               # start the serial evaluation loop (polls for branches)
+uv run evaluator/evaluate.py --baseline-only  # just establish the baseline score
+uv run evaluator/evaluate.py --push        # push leaderboard updates to origin
+uv run evaluator/server.py                 # start the webhook-driven web evaluator
+uv run evaluator/server.py --push          # web evaluator with auto-push
 
 # Test problems (no GPU needed, instant scoring — use for framework development)
 bash test_problems/activate.sh rastrigin   # activate a test problem (also: tsp, packing)
 bash evaluator/score.sh                    # verify scoring works
-python evaluator/evaluate.py --baseline-only  # establish baseline
+uv run evaluator/evaluate.py --baseline-only  # establish baseline
 git checkout -- problem.yaml agent_instructions.md state/ context/  # restore GPT problem
 
 # Simulated test run (generates progress chart, doesn't touch working tree)
-python test_problems/run_test.py rastrigin              # run with 15 submissions
-python test_problems/run_test.py tsp -n 20              # more submissions
-python test_problems/run_test.py packing --include-failures  # with crash submissions
-python test_problems/plot_progress.py evaluator/history.db   # chart from real evaluator
+uv run test_problems/run_test.py rastrigin              # run with 15 submissions
+uv run test_problems/run_test.py tsp -n 20              # more submissions
+uv run test_problems/run_test.py packing --include-failures  # with crash submissions
+uv run test_problems/plot_progress.py evaluator/history.db   # chart from real evaluator
 ```
 
 ## Architecture

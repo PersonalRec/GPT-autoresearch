@@ -23,3 +23,4 @@ results.tsv
 
 # Evaluator (private — scoring code, DB, logs)
 evaluator/
+.DS_Store
