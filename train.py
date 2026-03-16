@@ -10,6 +10,7 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 import gc
 import inspect
 import math
+import subprocess
 import time
 from dataclasses import dataclass, asdict
 
@@ -17,7 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from prepare import MAX_SEQ_LEN, TIME_BUDGET, Tokenizer, make_dataloader, evaluate_bpb
+from prepare import MAX_SEQ_LEN, TIME_BUDGET, EVAL_TOKENS, Tokenizer, make_dataloader
 
 # ---------------------------------------------------------------------------
 # GPT Model
@@ -264,6 +265,33 @@ class GPT(nn.Module):
 
 
 
+def get_gpu_stats():
+    """Query nvidia-smi for temperature (C) and power draw (W)."""
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=temperature.gpu,power.draw",
+             "--format=csv,noheader,nounits"],
+            timeout=2,
+        ).decode().strip()
+        temp_str, power_str = out.split(",")
+        return int(temp_str.strip()), float(power_str.strip())
+    except Exception:
+        return 0, 0.0
+
+
+@torch.no_grad()
+def evaluate_val_loss(model, tokenizer, batch_size):
+    """Standard cross-entropy validation loss averaged over EVAL_TOKENS."""
+    val_loader = make_dataloader(tokenizer, batch_size, MAX_SEQ_LEN, "val")
+    steps = EVAL_TOKENS // (batch_size * MAX_SEQ_LEN)
+    total_loss = 0.0
+    for _ in range(steps):
+        x, y, _ = next(val_loader)
+        loss = model(x, y, reduction='mean')
+        total_loss += loss.item()
+    return total_loss / steps
+
+
 # ---------------------------------------------------------------------------
 # Setup: tokenizer, model, optimizer, dataloader
 # ---------------------------------------------------------------------------
@@ -386,7 +414,9 @@ while True:
     mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / GPU_BF16_PEAK_FLOPS
     remaining = TIME_BUDGET - total_training_time
 
-    print(f"step {step:05d} | loss: {train_loss_f:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s", flush=True)
+    gpu_temp, gpu_power = get_gpu_stats()
+    gpu_mem_gb = torch.cuda.memory_allocated() / 1024**3
+    print(f"step {step:05d} | loss: {train_loss_f:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s | {gpu_temp}°C {gpu_power:.0f}W {gpu_mem_gb:.1f}GB", flush=True)
 
     # GC management (Python's GC causes ~500ms stalls)
     if step == 0:
@@ -409,13 +439,13 @@ total_tokens = step * TOTAL_BATCH_SIZE
 # Final eval
 model.eval()
 with autocast_ctx:
-    val_bpb = evaluate_bpb(model, tokenizer, DEVICE_BATCH_SIZE)
+    val_loss = evaluate_val_loss(model, tokenizer, DEVICE_BATCH_SIZE)
 
 # Final summary
 t_end = time.time()
 
 print("---")
-print(f"val_bpb:          {val_bpb:.6f}")
+print(f"val_loss:         {val_loss:.6f}")
 print(f"training_seconds: {total_training_time:.1f}")
 print(f"total_seconds:    {t_end - t_start:.1f}")
 print(f"peak_vram_mb:     {torch.cuda.max_memory_allocated() / 1024 / 1024:.1f}")

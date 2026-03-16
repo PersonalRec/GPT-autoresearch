@@ -25,18 +25,26 @@ Each experiment runs on a single GPU. The training script runs for a **fixed tim
 **What you CAN do:**
 - Modify `train.py` — this is the only file you edit. Everything is fair game: model architecture, weights, dtypes, optimizer, hyperparameters, training loop, batch size (you are limited with RTX 3090 24GB VRAM, 71.2 TFLOPS for BF16 dense), try to keep the model's size in the range of 124M parameters ± 10M, etc.
  
- THe different model architecturesand their performances are nicely explained in this paper: https://arxiv.org/pdf/2109.10686
+The different model architecturesand their performances are nicely explained in this paper: https://arxiv.org/pdf/2109.10686
+
+IMPORTANT: Keep in mind that the batch size is set to 16, and could be changed as only a factor of 2: e.g. 8, 16, 32, etc. With the initial model's architecture and 24 GB setup, the model consumes around 15 GB of VRAM.
+
+IMPORTANT: Your goal is finding optimal hyperparameters that generalize to full-scale training (multi-GPU, tens of hours). Do NOT exploit the 20-minute time window — for example, aggressively reducing TOTAL_BATCH_SIZE gives more 
+steps in 20 minutes but hurts convergence at scale. If you want to change the TOTAL_BATCH_SIZE value, think about it carefully. Generally focus on changes that improve loss at any training duration: architecture tweaks, learning rate schedule, initialization, activation functions, normalization, weights dtypes, etc.
+
+IMPORTANT: keep an eye on the GPU temperature, power consumption etc. during training. Sometimes a GPU might throttle and that will affect the validation loss.
+
 
 **What you CANNOT do:**
 - Modify `prepare.py`. It is read-only. It contains the fixed evaluation, data loading, tokenizer, and training constants (time budget, sequence length, etc).
 - Install new packages or add dependencies. You can only use what's already in `pyproject.toml`.
 - Modify the evaluation harness. The `evaluate_bpb` function in `prepare.py` is the ground truth metric.
 
-**The goal is simple: get the lowest val_bpb.** Since the time budget is fixed, you don't need to worry about training time — it's always 0 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, try to keep the model's size in the range of 124M parameters ± 10M. The only constraint is that the code runs without crashing and finishes within the time budget.
+**The goal is simple: get the lowest val_loss.** Since the time budget is fixed, you don't need to worry about training time — it's always 20 minutes. Everything is fair game: change the architecture, the optimizer, the hyperparameters, the batch size, try to keep the model's size in the range of 124M parameters ± 10M. The only constraint is that the code runs without crashing and finishes within the time budget.
 
-**VRAM** is a soft constraint. Some increase is acceptable for meaningful val_bpb gains, but it should not blow up dramatically.
+**VRAM** is a soft constraint. Some increase is acceptable for meaningful val_loss gains, but it should not blow up dramatically.
 
-**Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_bpb improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_bpb improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
+**Simplicity criterion**: All else being equal, simpler is better. A small improvement that adds ugly complexity is not worth it. Conversely, removing something and getting equal or better results is a great outcome — that's a simplification win. When evaluating whether to keep a change, weigh the complexity cost against the improvement magnitude. A 0.001 val_loss improvement that adds 20 lines of hacky code? Probably not worth it. A 0.001 val_loss improvement from deleting code? Definitely keep. An improvement of ~0 but much simpler code? Keep.
 
 **The first run**: Your very first run should always be to establish the baseline, so you will run the training script as is.
 
@@ -46,7 +54,7 @@ Once the script finishes it prints a summary like this:
 
 ```
 ---
-val_bpb:          0.997900
+val_loss:         3.456789
 training_seconds: 300.1
 total_seconds:    365.9
 peak_vram_mb:     23060.2
@@ -59,7 +67,7 @@ num_params_M:     128.3
 Note that the script is configured to always stop after 20 minutes , so depending on the computing platform of this computer the numbers might look different. You can extract the key metric from the log file:
 
 ```
-grep "^val_bpb:" run.log
+grep "^val_loss:" run.log
 ```
 
 ## Logging results
@@ -69,11 +77,11 @@ When an experiment is done, log it to `results.tsv` (tab-separated, NOT comma-se
 The TSV has a header row and 5 columns:
 
 ```
-commit	val_bpb	memory_gb	status	description
+commit	val_loss	memory_gb	status	description
 ```
 
 1. git commit hash (short, 7 chars)
-2. val_bpb achieved (e.g. 1.234567) — use 0.000000 for crashes
+2. val_loss achieved (e.g. 1.234567) — use 0.000000 for crashes
 3. peak memory in GB, round to .1f (e.g. 12.3 — divide peak_vram_mb by 1024) — use 0.0 for crashes
 4. status: `keep`, `discard`, or `crash`
 5. short text description of what this experiment tried
@@ -81,10 +89,10 @@ commit	val_bpb	memory_gb	status	description
 Example:
 
 ```
-commit	val_bpb	memory_gb	status	description
-a1b2c3d	0.997900	44.0	keep	baseline
-b2c3d4e	0.993200	44.2	keep	increase LR to 0.04
-c3d4e5f	1.005000	44.0	discard	switch to GeLU activation
+commit	val_loss	memory_gb	status	description
+a1b2c3d	6.997900	44.0	keep	baseline
+b2c3d4e	5.993200	44.2	keep	increase LR to 0.04
+c3d4e5f	3.005000	44.0	discard	switch to GeLU activation
 d4e5f6g	0.000000	0.0	crash	double model width (OOM)
 ```
 
@@ -98,11 +106,11 @@ LOOP FOREVER:
 2. Tune `train.py` with an experimental idea by directly hacking the code.
 3. git commit
 4. Run the experiment: `uv run train.py > run.log 2>&1` (redirect everything — do NOT use tee or let output flood your context)
-5. Read out the results: `grep "^val_bpb:\|^peak_vram_mb:" run.log`
+5. Read out the results: `grep "^val_loss:\|^peak_vram_mb:" run.log`
 6. If the grep output is empty, the run crashed. Run `tail -n 50 run.log` to read the Python stack trace and attempt a fix. If you can't get things to work after more than a few attempts, give up.
 7. Record the results in the tsv (NOTE: do not commit the results.tsv file, leave it untracked by git)
-8. If val_bpb improved (lower), you "advance" the branch, keeping the git commit
-9. If val_bpb is equal or worse, you git reset back to where you started
+8. If val_loss improved (lower), you "advance" the branch, keeping the git commit
+9. If val_loss is equal or worse, you git reset back to where you started
 
 The idea is that you are a completely autonomous researcher trying things out. If they work, keep. If they don't, discard. And you're advancing the branch so that you can iterate. If you feel like you're getting stuck in some way, you can rewind but you should probably do this very very sparingly (if ever).
 
