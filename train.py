@@ -386,7 +386,7 @@ while True:
     mfu = 100 * num_flops_per_token * TOTAL_BATCH_SIZE / dt / GPU_BF16_PEAK_FLOPS
     remaining = TIME_BUDGET - total_training_time
 
-    print(f"\rstep {step:05d} | loss: {train_loss_f:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s    ", end="", flush=True)
+    print(f"step {step:05d} | loss: {train_loss_f:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s", flush=True)
 
     # GC management (Python's GC causes ~500ms stalls)
     if step == 0:

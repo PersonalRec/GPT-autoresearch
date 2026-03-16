@@ -38,7 +38,7 @@ TOKENIZER_DIR = os.path.join(CACHE_DIR, "tokenizer")
 # FineWeb-Edu dataset
 DATASET_NAME = "HuggingFaceFW/fineweb-edu"
 DATASET_CONFIG = "sample-10BT"
-DATASET_SPLIT = "train[:10%]"   # 10% of the 10BT sample (~1B tokens)
+DATASET_SPLIT = "train[:1%]"    # 1% of the 10BT sample (~100M tokens)
 DOCS_PER_SHARD = 100_000        # documents per parquet shard
 
 VAL_FILENAME = "val.parquet"
