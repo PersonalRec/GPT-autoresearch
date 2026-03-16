@@ -1,10 +1,10 @@
 """
 One-time data preparation for autoresearch experiments.
-Downloads FineWeb-Edu data and sets up GPT-2 tokenizer.
+Streams FineWeb-Edu data and sets up GPT-2 tokenizer.
 
 Usage:
-    python prepare.py                  # full prep (download + tokenizer)
-    python prepare.py --num-shards 5   # limit train shards (for testing)
+    python prepare.py                    # full prep (100K docs + tokenizer)
+    python prepare.py --num-docs 10000   # fewer docs (for testing)
 
 Data and tokenizer are stored in ~/.cache/autoresearch/.
 """
@@ -44,7 +44,7 @@ TOKENIZER_DIR = os.path.join(CACHE_DIR, "tokenizer")
 # FineWeb-Edu dataset
 DATASET_NAME = "HuggingFaceFW/fineweb-edu"
 DATASET_CONFIG = "sample-10BT"
-DATASET_SPLIT = "train[:1%]"    # 1% of the 10BT sample (~100M tokens)
+NUM_DOCS = 200_000              # ~100M tokens (1% of 10BT sample)
 DOCS_PER_SHARD = 100_000        # documents per parquet shard
 
 VAL_FILENAME = "val.parquet"
@@ -54,8 +54,8 @@ EOT_TOKEN = "<|endoftext|>"     # GPT-2 delimiter / BOS token
 # Data download
 # ---------------------------------------------------------------------------
 
-def download_data(max_train_shards=None):
-    """Download FineWeb-Edu, split into train/val, save as parquet shards."""
+def download_data(num_docs=NUM_DOCS):
+    """Stream FineWeb-Edu, take num_docs documents, split into train/val, save as parquet shards."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
     existing = sorted(f for f in os.listdir(DATA_DIR) if f.endswith(".parquet"))
@@ -63,38 +63,43 @@ def download_data(max_train_shards=None):
         print(f"Data: {len(existing)} shards already at {DATA_DIR}")
         return
 
+    import pyarrow as pa
     from datasets import load_dataset
 
-    print(f"Downloading {DATASET_NAME} ({DATASET_CONFIG}, {DATASET_SPLIT})...")
+    print(f"Streaming {DATASET_NAME} ({DATASET_CONFIG}), taking {num_docs:,} docs...")
     t0 = time.time()
-    ds = load_dataset(DATASET_NAME, name=DATASET_CONFIG, split=DATASET_SPLIT)
+    ds = load_dataset(DATASET_NAME, name=DATASET_CONFIG, split="train", streaming=True)
+    docs = list(ds.take(num_docs))
+    del ds  # close streaming connection
     t1 = time.time()
-    print(f"  Downloaded {len(ds):,} documents in {t1 - t0:.1f}s")
+    print(f"  Downloaded {len(docs):,} documents in {t1 - t0:.1f}s")
 
     # Split: 99% train, 1% val
-    splits = ds.train_test_split(test_size=0.01, seed=42)
+    import random
+    random.seed(42)
+    random.shuffle(docs)
+    val_count = max(1, len(docs) // 100)
+    val_docs = docs[:val_count]
+    train_docs = docs[val_count:]
 
     # Save val shard
     val_path = os.path.join(DATA_DIR, VAL_FILENAME)
-    splits["test"].to_parquet(val_path)
-    print(f"  Val: {len(splits['test']):,} docs -> {val_path}")
+    val_table = pa.table({"text": [d["text"] for d in val_docs]})
+    pq.write_table(val_table, val_path)
+    print(f"  Val: {len(val_docs):,} docs -> {val_path}")
 
     # Save train shards
-    train_ds = splits["train"]
-    num_shards = max(1, (len(train_ds) + DOCS_PER_SHARD - 1) // DOCS_PER_SHARD)
-    if max_train_shards is not None:
-        num_shards = min(num_shards, max_train_shards)
-
+    num_shards = max(1, (len(train_docs) + DOCS_PER_SHARD - 1) // DOCS_PER_SHARD)
     for i in range(num_shards):
         start = i * DOCS_PER_SHARD
-        end = min(start + DOCS_PER_SHARD, len(train_ds))
-        shard = train_ds.select(range(start, end))
+        end = min(start + DOCS_PER_SHARD, len(train_docs))
+        shard_docs = train_docs[start:end]
+        shard_table = pa.table({"text": [d["text"] for d in shard_docs]})
         shard_path = os.path.join(DATA_DIR, f"shard_{i:05d}.parquet")
-        shard.to_parquet(shard_path)
+        pq.write_table(shard_table, shard_path)
         print(f"  Train shard {i}: {end - start:,} docs -> {shard_path}")
 
-    docs_saved = min(num_shards * DOCS_PER_SHARD, len(train_ds))
-    print(f"Data: {docs_saved:,} train docs in {num_shards} shards, ready at {DATA_DIR}")
+    print(f"Data: {len(train_docs):,} train docs in {num_shards} shards, ready at {DATA_DIR}")
 
 # ---------------------------------------------------------------------------
 # Tokenizer setup (GPT-2, no training needed)
@@ -312,15 +317,15 @@ def evaluate_bpb(model, tokenizer, batch_size):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare data and tokenizer for autoresearch")
-    parser.add_argument("--num-shards", type=int, default=None,
-                        help="Max number of train shards to save (default: all)")
+    parser.add_argument("--num-docs", type=int, default=NUM_DOCS,
+                        help=f"Number of documents to download (default: {NUM_DOCS:,})")
     args = parser.parse_args()
 
     print(f"Cache directory: {CACHE_DIR}")
     print()
 
-    # Step 1: Download FineWeb-Edu data
-    download_data(max_train_shards=args.num_shards)
+    # Step 1: Stream FineWeb-Edu data
+    download_data(num_docs=args.num_docs)
     print()
 
     # Step 2: Set up GPT-2 tokenizer
