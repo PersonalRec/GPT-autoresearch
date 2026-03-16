@@ -10,11 +10,17 @@ Data and tokenizer are stored in ~/.cache/autoresearch/.
 """
 
 import os
+import argparse
+
+# Fixing of the HuggingFace issue with slow dataset downloading 
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"  # Disable legacy fast transfer
+os.environ["HF_HUB_DISABLE_XET"] = "1"         # Disable Xet backend (v1.0+)
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "300"  # 5 minutes (default is 10s)
+os.environ["HF_HUB_ETAG_TIMEOUT"] = "60"       # Metadata timeout
+
 import time
 import math
-import argparse
 import pickle
-
 import pyarrow.parquet as pq
 import tiktoken
 import torch
