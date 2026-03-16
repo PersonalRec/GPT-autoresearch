@@ -415,7 +415,7 @@ while True:
     remaining = TIME_BUDGET - total_training_time
 
     gpu_temp, gpu_power = get_gpu_stats()
-    gpu_mem_gb = torch.cuda.memory_allocated() / 1024**3
+    gpu_mem_gb = torch.cuda.max_memory_reserved() / 1024**3
     print(f"step {step:05d} | loss: {train_loss_f:.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.0f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.1f}% | epoch: {epoch} | remaining: {remaining:.0f}s | {gpu_temp}°C {gpu_power:.0f}W {gpu_mem_gb:.1f}GB", flush=True)
 
     # GC management (Python's GC causes ~500ms stalls)
