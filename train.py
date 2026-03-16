@@ -343,17 +343,21 @@ print(f"Gradient accumulation steps: {grad_accum_steps}")
 # We estimate max_steps from the time budget after the first step
 estimated_max_steps = 1000  # initial estimate, updated after first step
 
+DECAY_FRACTION = 0.2  # fraction of training spent in decay phase
+
 def get_lr(step):
     # Linear warmup
     if step < WARMUP_STEPS:
         return MAX_LR * (step + 1) / WARMUP_STEPS
-    # After estimated_max_steps, return min_lr
+    # WSD: stable at MAX_LR, then linear decay in last DECAY_FRACTION of training
+    decay_start = int(estimated_max_steps * (1 - DECAY_FRACTION))
+    if step < decay_start:
+        return MAX_LR
     if step > estimated_max_steps:
         return MIN_LR
-    # Cosine decay between warmup and estimated_max_steps
-    decay_ratio = (step - WARMUP_STEPS) / (estimated_max_steps - WARMUP_STEPS)
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
-    return MIN_LR + coeff * (MAX_LR - MIN_LR)
+    # Linear decay from MAX_LR to MIN_LR
+    decay_ratio = (step - decay_start) / (estimated_max_steps - decay_start)
+    return MAX_LR - decay_ratio * (MAX_LR - MIN_LR)
 
 # ---------------------------------------------------------------------------
 # Training loop
