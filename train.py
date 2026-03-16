@@ -51,7 +51,7 @@ WARMUP_STEPS = 50
 WEIGHT_DECAY = 0.1
 GRAD_CLIP = 1.0                 # global gradient norm clipping
 
-# GPU Performance (RTX 3090)
+# GPU Performance (RTX 3090) - Do not change this. It is static.
 GPU_BF16_PEAK_FLOPS = 71.2e12   # RTX 3090 BF16 tensor core TFLOPS (FP32 accumulate, dense)
 
 
