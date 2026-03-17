@@ -29,8 +29,8 @@ class GPTConfig:
     sequence_len: int = 1024      # maximum sequence length (context length)
     vocab_size: int = 50304       # number of tokens
     n_layer: int = 12             # number of transformer blocks
-    n_head: int = 12              # number of attention heads
-    n_embd: int = 768             # embedding dimension
+    n_head: int = 10              # number of attention heads
+    n_embd: int = 640             # embedding dimension
     use_rope: bool = True         # use RoPE positional encoding
     rope_base: float = 10000.0
     mlp_type: str = "swiglu"      # MLP activation: "gelu" or "swiglu"
@@ -176,7 +176,6 @@ class GPT(nn.Module):
         if not getattr(config, "use_rope", True):
             self.transformer["wpe"] = nn.Embedding(config.sequence_len, config.n_embd)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
-        self.transformer.wte.weight = self.lm_head.weight
 
     def _init_weights(self, module):
         if isinstance(module, nn.Linear):
