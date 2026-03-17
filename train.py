@@ -44,7 +44,7 @@ TOTAL_BATCH_SIZE = 65536        # 2**16, ~64K tokens per optimizer step
 DEVICE_BATCH_SIZE = 16          # per-device batch size (fits RTX 3090 24GB)
 
 # Learning rate schedule (cosine decay with warmup)
-MAX_LR = 1.2e-3                # 1.2e-3
+MAX_LR = 1.5e-3                # 1.5e-3
 MIN_LR = MAX_LR * 0.1          # 2.4e-4
 WARMUP_STEPS = 50
 
