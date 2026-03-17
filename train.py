@@ -287,7 +287,7 @@ class GPT(nn.Module):
             print(f"AdamW decay params: {len(adam_decay_params)}, {sum(p.numel() for p in adam_decay_params):,}")
             print(f"AdamW nodecay params: {len(adam_nodecay_params)}, {sum(p.numel() for p in adam_nodecay_params):,}")
 
-        muon_optimizer = Muon(muon_params, lr=MUON_LR, momentum=0.95)
+        muon_optimizer = Muon(muon_params, lr=MUON_LR, momentum=0.95, ns_steps=3)
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and device_type == "cuda"
         adam_optimizer = torch.optim.AdamW(
