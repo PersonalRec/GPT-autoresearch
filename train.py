@@ -20,6 +20,53 @@ import torch.nn.functional as F
 
 from prepare import MAX_SEQ_LEN, TIME_BUDGET, EVAL_TOKENS, Tokenizer, make_dataloader
 
+
+# ---------------------------------------------------------------------------
+# Muon Optimizer (Newton-Schulz orthogonalization for 2D params)
+# ---------------------------------------------------------------------------
+
+def newton_schulz_(G, steps=5):
+    """In-place Newton-Schulz orthogonalization of a matrix."""
+    assert G.ndim == 2
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    X = G.bfloat16()
+    X /= (X.norm() + 1e-7)
+    for _ in range(steps):
+        A = X @ X.T
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+    return X
+
+class Muon(torch.optim.Optimizer):
+    """Muon optimizer: Newton-Schulz orthogonalization for 2D weight matrices."""
+    def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True, ns_steps=5):
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            lr = group['lr']
+            momentum = group['momentum']
+            nesterov = group['nesterov']
+            ns_steps = group['ns_steps']
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                state = self.state[p]
+                if len(state) == 0:
+                    state['momentum_buffer'] = torch.zeros_like(g)
+                buf = state['momentum_buffer']
+                buf.mul_(momentum).add_(g)
+                if nesterov:
+                    g = g.add(buf, alpha=momentum)
+                else:
+                    g = buf
+                if g.ndim == 2:
+                    g = newton_schulz_(g, steps=ns_steps)
+                p.add_(g, alpha=-lr)
+
 # ---------------------------------------------------------------------------
 # GPT Model
 # ---------------------------------------------------------------------------
@@ -44,8 +91,9 @@ TOTAL_BATCH_SIZE = 65536        # 2**16, ~64K tokens per optimizer step
 DEVICE_BATCH_SIZE = 16          # per-device batch size (fits RTX 3090 24GB)
 
 # Learning rate schedule (cosine decay with warmup)
-MAX_LR = 1.8e-3                # 1.8e-3
-MIN_LR = MAX_LR * 0.1          # 2.4e-4
+MAX_LR = 1.8e-3                # 1.8e-3 (for AdamW on embeddings)
+MIN_LR = MAX_LR * 0.1          # min LR
+MUON_LR = 0.02                 # Muon LR for 2D transformer weights
 WARMUP_STEPS = 50
 
 # Optimizer
@@ -221,24 +269,33 @@ class GPT(nn.Module):
     def configure_optimizers(self, weight_decay, learning_rate, device_type, verbose=True):
         param_dict = {pn: p for pn, p in self.named_parameters()}
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
-        # 2D params get weight decay, 1D params (biases, norms) don't
-        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-        optim_groups = [
-            {'params': decay_params, 'weight_decay': weight_decay},
-            {'params': nodecay_params, 'weight_decay': 0.0}
-        ]
-        num_decay_params = sum(p.numel() for p in decay_params)
-        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+
+        # Split: 2D transformer weights -> Muon, embeddings + 1D -> AdamW
+        muon_params = []
+        adam_decay_params = []
+        adam_nodecay_params = []
+        for name, p in param_dict.items():
+            if p.dim() >= 2 and 'wte' not in name and 'lm_head' not in name:
+                muon_params.append(p)
+            elif p.dim() >= 2:
+                adam_decay_params.append(p)
+            else:
+                adam_nodecay_params.append(p)
+
         if verbose:
-            print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-            print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+            print(f"Muon params: {len(muon_params)}, {sum(p.numel() for p in muon_params):,}")
+            print(f"AdamW decay params: {len(adam_decay_params)}, {sum(p.numel() for p in adam_decay_params):,}")
+            print(f"AdamW nodecay params: {len(adam_nodecay_params)}, {sum(p.numel() for p in adam_nodecay_params):,}")
+
+        muon_optimizer = Muon(muon_params, lr=MUON_LR, momentum=0.95)
         fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
         use_fused = fused_available and device_type == "cuda"
-        if verbose:
-            print(f"using fused AdamW: {use_fused}")
-        optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused)
-        return optimizer
+        adam_optimizer = torch.optim.AdamW(
+            [{'params': adam_decay_params, 'weight_decay': weight_decay},
+             {'params': adam_nodecay_params, 'weight_decay': 0.0}],
+            lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused
+        )
+        return muon_optimizer, adam_optimizer
 
     def forward(self, idx, targets=None, reduction='mean'):
         _, T = idx.size()
@@ -324,7 +381,7 @@ tokens_per_fwdbwd = DEVICE_BATCH_SIZE * MAX_SEQ_LEN
 assert TOTAL_BATCH_SIZE % tokens_per_fwdbwd == 0
 grad_accum_steps = TOTAL_BATCH_SIZE // tokens_per_fwdbwd
 
-optimizer = model.configure_optimizers(
+muon_optimizer, adam_optimizer = model.configure_optimizers(
     weight_decay=WEIGHT_DECAY,
     learning_rate=MAX_LR,
     device_type="cuda",
@@ -387,11 +444,16 @@ while True:
 
     # Set learning rate for this step
     lr = get_lr(step)
-    for param_group in optimizer.param_groups:
+    muon_lr_scale = lr / MAX_LR  # scale Muon LR proportionally
+    for param_group in adam_optimizer.param_groups:
         param_group['lr'] = lr
+    for param_group in muon_optimizer.param_groups:
+        param_group['lr'] = MUON_LR * muon_lr_scale
 
-    optimizer.step()
-    optimizer.zero_grad(set_to_none=True)
+    muon_optimizer.step()
+    adam_optimizer.step()
+    muon_optimizer.zero_grad(set_to_none=True)
+    adam_optimizer.zero_grad(set_to_none=True)
 
     train_loss_f = loss_accum.item()
 
