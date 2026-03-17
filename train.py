@@ -28,9 +28,9 @@ from prepare import MAX_SEQ_LEN, TIME_BUDGET, EVAL_TOKENS, Tokenizer, make_datal
 class GPTConfig:
     sequence_len: int = 1024      # maximum sequence length (context length)
     vocab_size: int = 50304       # number of tokens
-    n_layer: int = 12             # number of transformer blocks
-    n_head: int = 10              # number of attention heads
-    n_embd: int = 640             # embedding dimension
+    n_layer: int = 16             # number of transformer blocks
+    n_head: int = 9               # number of attention heads
+    n_embd: int = 576             # embedding dimension
     use_rope: bool = True         # use RoPE positional encoding
     rope_base: float = 10000.0
     mlp_type: str = "swiglu"      # MLP activation: "gelu" or "swiglu"
