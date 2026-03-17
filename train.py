@@ -97,7 +97,7 @@ MUON_LR = 0.015                # Muon LR for 2D transformer weights
 WARMUP_STEPS = 50
 
 # Optimizer
-WEIGHT_DECAY = 0.1
+WEIGHT_DECAY = 0.05
 GRAD_CLIP = 0.5                 # global gradient norm clipping
 
 # GPU Performance (RTX 3090) - Do not change this. It is static.
