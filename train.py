@@ -93,7 +93,7 @@ DEVICE_BATCH_SIZE = 16          # per-device batch size (fits RTX 3090 24GB)
 # Learning rate schedule (cosine decay with warmup)
 MAX_LR = 1.8e-3                # 1.8e-3 (for AdamW on embeddings)
 MIN_LR = MAX_LR * 0.1          # min LR
-MUON_LR = 0.02                 # Muon LR for 2D transformer weights
+MUON_LR = 0.015                # Muon LR for 2D transformer weights
 WARMUP_STEPS = 50
 
 # Optimizer
