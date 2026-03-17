@@ -355,9 +355,10 @@ def get_lr(step):
         return MAX_LR
     if step > estimated_max_steps:
         return MIN_LR
-    # Linear decay from MAX_LR to MIN_LR
+    # Cosine decay from MAX_LR to MIN_LR
     decay_ratio = (step - decay_start) / (estimated_max_steps - decay_start)
-    return MAX_LR - decay_ratio * (MAX_LR - MIN_LR)
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
+    return MIN_LR + coeff * (MAX_LR - MIN_LR)
 
 # ---------------------------------------------------------------------------
 # Training loop
