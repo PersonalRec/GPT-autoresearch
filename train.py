@@ -40,7 +40,7 @@ class GPTConfig:
 # ---------------------------------------------------------------------------
 
 # Gradient accumulation
-TOTAL_BATCH_SIZE = 524288       # 2**19, ~0.5M tokens per optimizer step
+TOTAL_BATCH_SIZE = 262144       # 2**18, ~0.25M tokens per optimizer step
 DEVICE_BATCH_SIZE = 16          # per-device batch size (fits RTX 3090 24GB)
 
 # Learning rate schedule (cosine decay with warmup)
