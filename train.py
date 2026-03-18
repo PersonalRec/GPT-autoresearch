@@ -399,7 +399,7 @@ print(f"Gradient accumulation steps: {grad_accum_steps}")
 # We estimate max_steps from the time budget after the first step
 estimated_max_steps = 1000  # initial estimate, updated after first step
 
-DECAY_FRACTION = 0.35  # fraction of training spent in decay phase
+DECAY_FRACTION = 0.4   # fraction of training spent in decay phase
 
 def get_lr(step):
     # Linear warmup
