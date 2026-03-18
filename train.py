@@ -293,7 +293,7 @@ class GPT(nn.Module):
         adam_optimizer = torch.optim.AdamW(
             [{'params': adam_decay_params, 'weight_decay': weight_decay},
              {'params': adam_nodecay_params, 'weight_decay': 0.0}],
-            lr=learning_rate, betas=(0.9, 0.99), eps=1e-8, fused=use_fused
+            lr=learning_rate, betas=(0.9, 0.99), eps=1e-6, fused=use_fused
         )
         return muon_optimizer, adam_optimizer
 
