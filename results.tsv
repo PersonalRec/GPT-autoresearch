@@ -1,0 +1,101 @@
+commit	val_loss	memory_gb	status	description
+48003ad	6.630933	13.8	keep	baseline
+7be3923	0.000000	0.0	crash	DEVICE_BATCH_SIZE 16->32 (OOM)
+f55c53f	6.045879	9.5	keep	GPT-2 Small shape: 12 layers 768 embd 12 heads (was 30x512x8)
+c7037d2	6.132749	16.7	discard	DEVICE_BATCH_SIZE 16->32 with 12-layer model
+eebc90e	6.068506	9.5	discard	MAX_LR 2.4e-3 -> 3.6e-3
+29f1be9	6.278840	9.5	discard	WARMUP_STEPS 50 -> 20
+5ee9497	0.000000	0.0	crash	torch.compile max-autotune (CUDA graphs conflict with grad accum)
+95e03a7	6.154331	9.4	discard	remove dpn pre-embed norm + beta2=0.99
+dc5e851	6.247036	9.5	discard	GELU instead of SwiGLU activation
+806f96d	5.894826	9.5	keep	WSD (warmup-stable-decay) LR schedule instead of cosine
+28242f2	5.820127	9.5	keep	WSD decay fraction 0.2 -> 0.1
+3f93ada	5.918643	9.5	discard	WSD decay fraction 0.1 -> 0.05 (too little decay)
+6f1bdb3	6.135963	9.5	discard	WARMUP_STEPS 50 -> 30 with WSD
+edaf4de	5.820388	9.5	discard	QK-norm (RMSNorm on Q/K) - no improvement + adds complexity
+9df39fd	5.823373	9.5	discard	weight_decay 0.1 -> 0.01
+50813c4	5.901661	9.5	discard	MAX_LR 2.4e-3 -> 1.8e-3 with WSD
+e43dbf6	4.922944	9.5	keep	TOTAL_BATCH_SIZE 524288 -> 262144 (2x optimizer steps)
+fef48ae	4.592337	9.5	keep	TOTAL_BATCH_SIZE 262144 -> 131072 (4x optimizer steps vs original)
+391fdf5	4.512604	9.5	keep	MAX_LR 2.4e-3 -> 1.8e-3 for smaller batch (sqrt scaling)
+2c9b3f3	4.138837	9.5	keep	TOTAL_BATCH_SIZE 65536 + MAX_LR 1.2e-3
+2e3b300	4.384006	9.5	discard	TOTAL_BATCH_SIZE 32768 + MAX_LR 9e-4 (too small batch)
+b71dac1	4.224166	9.5	discard	MAX_LR 1.2e-3 -> 1.5e-3 with batch 65536
+f21cde6	4.104738	9.5	keep	MAX_LR 1.2e-3 -> 9e-4 with batch 65536
+2223769	4.159336	9.5	discard	MAX_LR 9e-4 -> 6e-4 (too low)
+1e25855	4.134749	9.5	discard	TOTAL_BATCH_SIZE 65536 -> 49152
+230dead	4.142157	10.1	discard	16 layers 640 embd 10 heads (deeper narrower)
+3728096	4.275095	10.7	discard	14 layers (from 12) - slower steps outweigh extra capacity
+c540e03	4.254830	16.7	discard	DEVICE_BATCH_SIZE 16 -> 32 (17GB VRAM hurt performance)
+939d8e4	4.102738	9.5	keep	cosine decay in WSD (instead of linear)
+b78b093	4.153898	9.5	discard	muP embedding scaling (sqrt(n_embd))
+c7f4730	4.127093	9.5	discard	MIN_LR = 0 (decay to zero)
+cb3f8af	4.149564	9.5	discard	remove dpn pre-embedding norm (dpn helps)
+2565575	4.077010	8.6	keep	untie embeddings + n_embd 768->640 n_head 10 (65% MFU)
+cb2e278	4.059556	9.4	keep	16 layers 576 embd 9 heads untied (~122M params)
+e9d4caa	3.982817	10.3	keep	20 layers 512 embd 8 heads untied (~120M params)
+d6cd454	4.099726	9.4	discard	24 layers 480 embd (too deep/narrow)
+abfbf6e	4.072408	9.4	discard	18 layers 544 embd (intermediate)
+4e0786d	4.035081	10.3	discard	MAX_LR 9e-4 -> 7e-4 for 20-layer model
+2c86340	3.921321	10.3	keep	MAX_LR 9e-4 -> 1.2e-3 for 20-layer model
+b07a10c	3.879788	10.3	keep	MAX_LR 1.2e-3 -> 1.5e-3
+ede81d0	3.887250	10.3	discard	MAX_LR 1.5e-3 -> 2.0e-3 (slightly worse)
+7363f45	3.877882	10.3	keep	DECAY_FRACTION 0.1 -> 0.15
+2edcb11	3.904391	10.3	discard	batch 32768 + LR 1.0e-3 (too small batch for 20-layer)
+b768321	3.870562	10.3	keep	GRAD_CLIP 1.0 -> 0.5
+2e6c51f	3.888033	10.3	discard	GRAD_CLIP 0.5 -> 0.3 (too tight)
+ce3716f	4.027081	10.3	discard	beta1=0.95 (worse than 0.9)
+140b023	3.910541	10.3	discard	TOTAL_BATCH_SIZE 65536 -> 81920 (larger batch worse)
+04e4ca0	3.927628	10.3	discard	22 layers (slower steps outweigh extra depth)
+f0a2e4c	3.936005	10.3	discard	DEVICE_BATCH_SIZE 16 -> 8 (worse)
+2205fd3	3.901702	10.3	discard	RoPE base 10000 -> 1000 (worse)
+f0a6afa	3.892365	10.3	discard	WARMUP_STEPS 50 -> 100 (worse)
+07c45f0	3.914013	10.3	discard	logit softcapping (Gemma 2 style cap=30)
+87eefd6	3.876364	10.3	discard	RoPE base 10000 -> 100000 (marginally worse)
+e72abc9	3.871270	10.3	discard	RoPE base 10000 -> 50000 (essentially same)
+ebe2792	3.945753	10.3	discard	wider SwiGLU inner dim (1792 vs 1536) - slower per step
+2fdad19	3.904992	10.3	discard	cross-entropy loss in float32 (added overhead)
+b4a7ed7	3.950221	10.3	discard	n_head 8 -> 16 (head_dim 64 -> 32, worse)
+2158c45	3.920836	10.3	discard	narrower SwiGLU (1/2) + 25 layers
+150b928	3.853945	10.3	keep	MAX_LR 1.5e-3 -> 1.7e-3
+3e725a6	3.852355	10.3	keep	MAX_LR 1.7e-3 -> 1.8e-3
+50ba1ab	3.838122	10.0	keep	Muon optimizer for 2D transformer weights (LR=0.02)
+ce8ef1c	3.883426	10.0	discard	MUON_LR 0.02 -> 0.03 (too high)
+8b97492	3.825715	10.0	keep	MUON_LR 0.02 -> 0.015
+3a12775	3.842127	10.0	discard	MUON_LR 0.015 -> 0.01 (too low)
+5cc04aa	3.826143	10.0	discard	Newton-Schulz 5 -> 3 steps (same result)
+7590263	3.808603	10.0	keep	AdamW MAX_LR 1.8e-3 -> 3.0e-3 for embeddings
+f8f1eb8	3.805903	10.0	keep	AdamW MAX_LR 3e-3 -> 5e-3 for embeddings
+989c86c	3.800617	10.0	keep	AdamW MAX_LR 5e-3 -> 8e-3 for embeddings
+c182fb0	3.808860	10.0	discard	AdamW MAX_LR 8e-3 -> 1.2e-2 (too high)
+e9d7100	3.825671	10.0	discard	TOTAL_BATCH_SIZE 65536 -> 131072 with Muon
+3b9b235	3.800282	10.0	keep	NS steps 5 -> 3 (same loss + more steps + simpler)
+6101048	3.803254	10.0	discard	Muon momentum 0.95 -> 0.9 (slightly worse)
+8f44001	3.789024	10.0	keep	WEIGHT_DECAY 0.1 -> 0.05
+3bb89c3	3.778161	10.0	keep	WEIGHT_DECAY 0.05 -> 0.02
+6d842e7	3.776988	10.0	keep	WEIGHT_DECAY 0.02 -> 0.0 (simplification)
+d1f0a8c	3.762805	10.0	keep	DECAY_FRACTION 0.15 -> 0.2
+b71daaa	3.752034	10.0	keep	DECAY_FRACTION 0.2 -> 0.25
+80e68bb	3.747439	10.0	keep	DECAY_FRACTION 0.25 -> 0.3
+d011706	3.744153	10.0	keep	DECAY_FRACTION 0.3 -> 0.35
+0c13595	3.741280	10.0	keep	DECAY_FRACTION 0.35 -> 0.4
+42f69b3	3.741054	10.0	keep	DECAY_FRACTION 0.4 -> 0.5
+a1271f8	3.743777	10.0	discard	DECAY_FRACTION 0.5 -> 0.6 (too much decay)
+721c2c9	3.735182	10.0	keep	AdamW MAX_LR 8e-3 -> 1.2e-2 with decay 0.5
+8e47f36	3.729083	10.0	keep	AdamW MAX_LR 1.2e-2 -> 2.0e-2
+4cc5b8a	3.733235	10.0	discard	AdamW MAX_LR 2e-2 -> 3e-2 (too high)
+44e0ff9	3.725242	10.0	keep	MUON_LR 0.015 -> 0.02 with emb LR 2e-2
+6878875	3.726787	10.0	discard	MUON_LR 0.02 -> 0.025 (slightly worse)
+130165d	3.749805	10.0	discard	21 layers (slower steps hurt)
+e5b0fba	3.740832	10.0	discard	Muon without Nesterov (Nesterov helps)
+b15a32a	3.726273	10.0	discard	WARMUP_STEPS 50 -> 30 (marginally worse)
+71387e0	3.747013	10.0	discard	full cosine schedule (WSD still better)
+24f87f6	3.734854	10.0	discard	parallel attn+MLP (GPT-J style, worse)
+e4b4bd3	3.756389	10.0	discard	init std 0.02 -> 0.01 (worse)
+eae1849	3.731232	10.0	discard	TOTAL_BATCH_SIZE 65536 -> 49152 with Muon
+a7aa698	3.796880	10.0	discard	remove dpn norm with Muon (dpn still helps)
+029f222	3.728449	10.0	discard	GRAD_CLIP 0.5 -> 1.0 with Muon (0.5 still better)
+87f874e	3.711456	10.0	keep	AdamW beta2 0.95 -> 0.99 for embeddings
+a9e4a6b	3.733017	10.0	discard	AdamW beta1 0.9 -> 0.95 (worse)
+df20747	3.711846	10.0	discard	DECAY_FRACTION 0.5 -> 0.45 (same)
+c2d362b	3.723635	10.0	discard	MIN_LR = 0 (decay to zero, worse)
